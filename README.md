@@ -17,3 +17,34 @@
 - DETR (or Deformable DETR) — Transformer-based baseline?
 - Custom simple model
 - RetinaNet or RetinaNet + Soft-NMS?
+
+# Instructions
+
+### Python Environment
+
+- recommended: use venv
+```
+python -m venv venv
+source ./venv/bin/activate
+```
+- alternate: use docker with tensorflow cuda image (not tested)
+```
+sudo docker compose up # or just docker compose up
+# or use something like dev containers extension in vscode to access the container
+```
+
+### Setup
+
+```
+cd src
+python prep.py
+```
+- this restructures the datasets (caltech and citypersons) into yolo-compatible standard coco format
+
+### Training
+
+```
+python train.py <dataset> <model>
+# look at script for options or run without params to see available
+# for now only yolo model training works
+```

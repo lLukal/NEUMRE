@@ -70,7 +70,7 @@ if __name__ == '__main__':
     # parse system parameters
     args = sys.argv
     if len(args) < 3:
-        print('Usage: python main.py <dataset> <model>')
+        print('Usage: python train.py <dataset> <model>')
         print(f'<dataset> options:\n\t\t' + '\n\t\t'.join([d.value for d in DatasetType]))
         print(f'<model> options:\n\t\t' + '\n\t\t'.join([m.value for m in ModelType]))
         exit(1)
