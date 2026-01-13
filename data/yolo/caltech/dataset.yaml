@@ -1,0 +1,9 @@
+# Caltech Pedestrian Dataset (YOLO format)
+
+path: ../data/yolo/caltech
+train: images/train
+val: images/val
+
+nc: 1
+names:
+  0: person

@@ -1,0 +1,8 @@
+data/caltech/*
+data/citypersons/*
+data/yolo/*/images
+data/yolo/*/labels
+venv
+__pycache__
+runs
+yolov8n.pt
