@@ -33,6 +33,11 @@ sudo docker compose up # or just docker compose up
 # or use something like dev containers extension in vscode to access the container
 ```
 
+### Datasets
+
+- download caltech and citypersons from links above
+- extract them into data/caltech and data/citypersons
+
 ### Setup
 
 ```
