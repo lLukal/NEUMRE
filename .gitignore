@@ -1,8 +1,9 @@
 data/caltech/*
 data/citypersons/*
+data/penn-fudan/*
 data/yolo/*/images
 data/yolo/*/labels
 venv
 __pycache__
 runs
-yolov8n.pt
+yolov8*.pt
