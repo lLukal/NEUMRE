@@ -187,8 +187,8 @@ def evaluate_rcnn(model, val_loader, device):
             model.eval()
             outputs = model(images)
 
-            res = [{k: v.to(torch.device('cpu')) for k, v in t.items()} for t in outputs]
-            gt = [{k: v.to(torch.device('cpu')) for k, v in t.items()} for t in targets]
+            res = [{k: v.to(device) for k, v in t.items()} for t in outputs]
+            gt = [{k: v.to(device) for k, v in t.items()} for t in targets]
             metric.update(res, gt)
 
     map_results = metric.compute()
@@ -244,7 +244,7 @@ if __name__ == '__main__':
     args = sys.argv
     if len(args) < 4:
         print('Usage: python train.py <dataset> <model> <weights_path>')
-        print(f'<dataset> dataset name, options:\n\t\t' + '\n\t\t'.join([d.value for d in DatasetType]))
+        print(f'<dataset> - dataset name, options:\n\t\t' + '\n\t\t'.join([d.value for d in DatasetType]))
         print(f'<model> - model type, options:\n\t\t' + '\n\t\t'.join([m.value for m in ModelType]))
         print(f'<weights_path> - filepath to weights')
         exit(1)

@@ -40,7 +40,7 @@ def train_yolo(model, dataset_type):
     model.train(
         data=f'../data/yolo/{dataset_type.value}/dataset.yaml',
         epochs=50,
-        batch=8,
+        batch=4,
         imgsz=1024
     )
 
@@ -174,10 +174,10 @@ def train_rcnn(model, train_dataloader, val_dataloader, save_dir, device):
             print(f"\tNew Optimal Model Found! mAP: {best_map:.4f} - Saved Weights ***")
         else:
             epochs_without_improvement += 1
-            print(f"No improvement for {epochs_without_improvement} epoch(s).")
+            print(f"\tNo improvement for {epochs_without_improvement} epoch(s).")
         
         if epochs_without_improvement >= patience:
-            print(f"Stopping early at epoch {epoch+1}. The optimal point was epoch {epoch+1 - patience}.")
+            print(f"\tStopping early at epoch {epoch+1}. The optimal point was epoch {epoch+1 - patience}.")
             break
 
     print("Training Complete!")
@@ -203,7 +203,7 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType):
         # load and train model
         print(f'Preparing model "{model_type.value}"...')
         if model_type == ModelType.YOLO:
-            model = load_yolo_model('yolov8m')
+            model = load_yolo_model('yolov8n')
             train_yolo(model, dataset_type)
 
 
@@ -234,8 +234,8 @@ if __name__ == '__main__':
     args = sys.argv
     if len(args) < 3:
         print('Usage: python train.py <dataset> <model>')
-        print(f'<dataset> options:\n\t\t' + '\n\t\t'.join([d.value for d in DatasetType]))
-        print(f'<model> options:\n\t\t' + '\n\t\t'.join([m.value for m in ModelType]))
+        print(f'<dataset> - options:\n\t\t' + '\n\t\t'.join([d.value for d in DatasetType]))
+        print(f'<model> - options:\n\t\t' + '\n\t\t'.join([m.value for m in ModelType]))
         exit(1)
 
     # run

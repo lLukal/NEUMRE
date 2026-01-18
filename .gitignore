@@ -7,3 +7,4 @@ venv
 __pycache__
 runs
 yolov8*.pt
+trained_models/*
