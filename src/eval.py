@@ -1,11 +1,8 @@
-import sys
-
-from tqdm import tqdm
-
-from data import *
 from models import *
 from utils import *
 from torch.utils.data import DataLoader
+import sys
+from tqdm import tqdm
 import torch
 import cv2
 import numpy as np
@@ -14,6 +11,7 @@ from torchmetrics.detection.mean_ap import MeanAveragePrecision
 import warnings
 import torchvision
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.ops import box_iou
 
 #region HELPERS
 
@@ -72,15 +70,26 @@ class RCNNPredictor:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         return img_resized
 
+def compute_precision_recall(pred_boxes, scores, gt_boxes, iou_threshold=0.5):
+    if len(pred_boxes) == 0 or len(gt_boxes) == 0:
+        return 0.0, 0.0
+    ious = box_iou(pred_boxes, gt_boxes)
+    true_positives = (ious > iou_threshold).any(1).sum().item()
+    precision = true_positives / len(pred_boxes)
+    recall = true_positives / len(gt_boxes)
+    return precision, recall
+
 #endregion
 #region API
 
 def evaluate_yolo(model, dataset_type):
     metrics = model.val(data=f'../data/yolo/{dataset_type.value}/dataset.yaml')
-    print(metrics.box.map)
-    print(metrics.box.map50)
-    print(metrics.box.precision)
-    print(metrics.box.recall)
+
+    print("YOLOv8 Evaluation Results:")
+    print(f"  mAP50-95 (COCO-style mAP): {metrics.box.map:.4f}")
+    print(f"  mAP50: {metrics.box.map50:.4f}")
+    print(f"  Mean Precision: {metrics.box.mp:.4f}")
+    print(f"  Mean Recall: {metrics.box.mr:.4f}")
 
 def evaluate_detr(model, dataloader, device, output_dir="./runs/detr", epoch_num=None):
     warnings.filterwarnings("ignore", message=".*meta parameter.*") 
@@ -194,11 +203,75 @@ def evaluate_rcnn(model, val_loader, device):
     map_results = metric.compute()
     return (val_loss / len(val_loader)), map_results
 
+
+def evaluate_detr_final(model, loader, device, weights_path):
+    pass
+
+
+def evaluate_rcnn_final(model, loader, device, weights_path):
+    checkpoint = torch.load(weights_path, map_location=device)
+    model.load_state_dict(checkpoint['model'] if 'model' in checkpoint else checkpoint)
+    model.to(device).eval()  # set to eval mode
+    
+    all_losses = []
+    all_gt_boxes = []
+    all_pred_boxes = []
+    all_scores = []
+    all_labels = []
+
+    # Use model in eval mode, but enable loss computation
+    model.train()  # RCNN returns losses only in train mode
+    with torch.no_grad():
+        for batch in loader:
+            images, targets = batch  # unpack the 2 elements of the tuple
+            images = [img.to(device) for img in images]  # list of images on device
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+            # Get model outputs + loss
+            loss_dict = model(images, targets)
+            total_loss = sum(loss for loss in loss_dict.values())
+            all_losses.append(total_loss.item()) # type: ignore
+
+            # Switch to inference mode to get predictions
+            model.eval()
+            outputs = model(images)
+            model.train()
+
+            # Collect predictions and GT for metrics
+            for i, output in enumerate(outputs):
+                boxes = output['boxes']
+                scores = output['scores']
+                labels = output['labels']
+
+                keep = scores > 0.05
+                all_pred_boxes.append(boxes[keep].cpu())
+                all_scores.append(scores[keep].cpu())
+                all_labels.append(labels[keep].cpu())
+                all_gt_boxes.append(targets[i]['boxes'].cpu())
+
+    # Concatenate all predictions
+    all_pred_boxes = torch.cat(all_pred_boxes)
+    all_scores = torch.cat(all_scores)
+    all_labels = torch.cat(all_labels)
+    all_gt_boxes = torch.cat(all_gt_boxes)
+
+    # Compute precision & recall (IoU=0.5)
+    precision, recall = compute_precision_recall(all_pred_boxes, all_scores, all_gt_boxes, iou_threshold=0.5)
+
+    metrics = {
+        "loss": sum(all_losses) / len(all_losses),
+        "precision": precision,
+        "recall": recall
+    }
+
+    print(metrics)
+    return metrics
+
 #endregion
 #region MAIN
 
 def run_pipeline(dataset_type: DatasetType, model_type: ModelType, weights_path: str):
-    print('Starting training pipeline...')
+    print('Starting evaluation pipeline...')
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # device = "cpu"
 
@@ -208,7 +281,11 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType, weights_path:
         if model_type != ModelType.YOLO:
             try:
                 dataloader = load_dataset(dataset_type, model_type, 'test')
+                if len(dataloader) <= 1:
+                    print(len(dataloader))
+                raise Exception
             except:
+                print('WARNING: no test split, loading val')
                 dataloader = load_dataset(dataset_type, model_type, 'val')
 
         # load and evaluate model
@@ -220,12 +297,12 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType, weights_path:
 
         elif model_type == ModelType.DETR:
             model = load_detr_model(dataloader)
-            evaluate_detr(model, dataloader, device)
+            evaluate_detr_final(model, dataloader, device, weights_path)
 
 
         elif model_type == ModelType.RCNN:
             model = load_rcnn_model(device)
-            evaluate_rcnn(model, dataloader, device)
+            evaluate_rcnn_final(model, dataloader, device, weights_path)
 
 
         elif model_type == ModelType.CUSTOM:

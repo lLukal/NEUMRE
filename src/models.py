@@ -3,6 +3,7 @@
 #endregion
 #region API
 
+import warnings
 from utils import *
 
 def load_yolo_model(path: str = 'yolov8n.pt'):
@@ -11,14 +12,19 @@ def load_yolo_model(path: str = 'yolov8n.pt'):
     model = YOLO(path)
     return model
 
-def load_detr_model(dataloader=None, device=None):
-    from transformers import DetrForObjectDetection, DetrFeatureExtractor
+def load_detr_model(device):
+    from transformers import DetrForObjectDetection
     
-    feature_extractor = DetrFeatureExtractor.from_pretrained("facebook/detr-resnet-50")
-    model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50")
-    model = model.to(device) # type: ignore
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning)
+        
+        model = DetrForObjectDetection.from_pretrained(
+            "facebook/detr-resnet-50",
+            num_labels=1, 
+            ignore_mismatched_sizes=True 
+        )
 
-    return model, feature_extractor
+    return model.to(device)
 
 def load_custom_model():
     return None
