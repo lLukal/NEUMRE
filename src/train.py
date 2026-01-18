@@ -56,7 +56,48 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType):
 
 
         elif model_type == ModelType.CUSTOM:
-            model = load_custom_model()
+            model = load_custom_model(device=device, num_classes=2)
+
+            model.train()
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+            num_epochs = 1
+            for epoch in range(num_epochs):
+                epoch_loss = 0.0
+                num_batches = 0
+
+                for images, targets in dataloader:
+                    images = [img.to(device) for img in images]
+                    targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+                    # Forward pass - model returns loss dict in training mode
+                    loss_dict = model(images, targets)
+                    loss = loss_dict['loss']
+
+                    # Backward pass
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+
+                    epoch_loss += loss.item()
+                    num_batches += 1
+
+                    print(f"Epoch [{epoch+1}/{num_epochs}] Batch Loss: {loss.item():.4f} "
+                          f"(rpn_cls: {loss_dict['loss_rpn_cls'].item():.4f}, "
+                          f"rpn_reg: {loss_dict['loss_rpn_reg'].item():.4f}, "
+                          f"roi_cls: {loss_dict['loss_roi_cls'].item():.4f}, "
+                          f"roi_reg: {loss_dict['loss_roi_reg'].item():.4f})")
+
+                avg_loss = epoch_loss / max(num_batches, 1)
+                print(f"Epoch [{epoch+1}/{num_epochs}] Average Loss: {avg_loss:.4f}")
+
+            # Ensure models directory exists before saving
+            import os
+            models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
+            os.makedirs(models_dir, exist_ok=True)
+            model_path = os.path.join(models_dir, f'custom_{dataset_type.value}.pth')
+            torch.save(model.state_dict(), model_path)
+            print(f"Model saved to {model_path}")
 
     except Exception as e:
         print(e)
