@@ -1,12 +1,13 @@
 # Datasets
 
 - Caltech Pedestrian Detection Benchmark: https://data.caltech.edu/records/f6rph-90m20
-    - main dataset with lots of video data
+    - video data (.seq)
+    - complex and with few pedestrians on average
 - CityPersons: A Diverse Dataset for Pedestrian Detection: https://www.kaggle.com/datasets/hakurei/citypersons
     - subset of Cityscapes which only consists of person annotations
     - https://github.com/cvgroup-njust/CityPersons - additional useful repo
-- CrowdHuman, A Benchmark for Detecting Human in a Crowd: https://www.crowdhuman.org/
-    - very challenging dataset with lots of instances in frame
+- Penn-Fudan: Database for Pedestrian Detection and Segmentation: https://www.cis.upenn.edu/~jshi/ped_html/
+    - smaller dataset (170 images, 345 labeled pedestrians)
 
 ![alt text](image.png)
 

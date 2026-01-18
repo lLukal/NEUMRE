@@ -12,3 +12,5 @@ scipy
 torch
 torchvision
 transformers
+torchmetrics
+pycocotools

@@ -1,8 +1,11 @@
+import re
 import shutil
 import cv2
 import numpy as np
 from pathlib import Path
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+import yaml
 from data import read_seq, read_vbb
 
 def prep_caltech(
@@ -63,12 +66,14 @@ def prep_caltech(
                             bh = (y2 - y1) / h
                             f.write(f"0 {cx} {cy} {bw} {bh}\n")
         
-        print('Done!')
+        print('\tDone!')
 
 def prep_citypersons(
     src_root="../data/citypersons/Citypersons",
     out_root="../data/yolo/citypersons",
 ):
+    print('\nStarting citypersons dataset prep...')
+
     src_root = Path(src_root)
     out_root = Path(out_root)
 
@@ -112,6 +117,93 @@ def prep_citypersons(
                         "w",
                     ).close()
 
+        print('\tDone!')
+
+def prep_penn_fudan(
+    src_root="../data/penn-fudan/PennFudanPed",
+    out_root="../data/yolo/penn_fudan",
+    split_ratio=(0.8, 0.1, 0.1),
+):
+    print("\nStarting penn-fudan dataset prep...")
+
+    src_root = Path(src_root)
+    out_root = Path(out_root)
+
+    img_dir = src_root / "PNGImages"
+    ann_dir = src_root / "Annotation"
+
+    for split in ["train", "val", "test"]:
+        (out_root / "images" / split).mkdir(parents=True, exist_ok=True)
+        (out_root / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    img_paths = sorted(img_dir.glob("*.png"))
+
+    train_val, test = train_test_split(img_paths, test_size=split_ratio[2], random_state=11)
+    train, val = train_test_split(
+        train_val,
+        test_size=split_ratio[1] / (split_ratio[0] + split_ratio[1]),
+        random_state=11,
+    )
+
+    splits = {"train": train, "val": val, "test": test}
+
+    bbox_pattern = re.compile(
+        r"\((\d+),\s*(\d+)\)\s*-\s*\((\d+),\s*(\d+)\)"
+    )
+
+    for split_name, split_imgs in splits.items():
+        for img_path in tqdm(split_imgs, desc=split_name):
+            stem = img_path.stem
+            ann_path = ann_dir / f"{stem}.txt"
+
+            img = cv2.imread(str(img_path))
+            h, w = img.shape[:2] # type: ignore
+
+            out_img = out_root / "images" / split_name / img_path.name
+            cv2.imwrite(str(out_img), img) # type: ignore
+
+            out_lbl = out_root / "labels" / split_name / f"{stem}.txt"
+
+            if not ann_path.exists():
+                open(out_lbl, "w").close()
+                continue
+
+            labels = []
+
+            with open(ann_path) as f:
+                for line in f:
+                    if "Bounding box" in line:
+                        match = bbox_pattern.search(line)
+                        if not match:
+                            continue
+
+                        x1, y1, x2, y2 = map(float, match.groups())
+
+                        cx = ((x1 + x2) / 2) / w
+                        cy = ((y1 + y2) / 2) / h
+                        bw = (x2 - x1) / w
+                        bh = (y2 - y1) / h
+
+                        labels.append(f"0 {cx} {cy} {bw} {bh}")
+
+            with open(out_lbl, "w") as f:
+                f.write("\n".join(labels))
+
+    dataset_yaml = {
+        "path": str(out_root),
+        "train": "images/train",
+        "val": "images/val",
+        "test": "images/test",
+        "names": {0: "person"},
+    }
+
+    with open(out_root / "dataset.yaml", "w") as f:
+        yaml.dump(dataset_yaml, f)
+
+    print("\tDone!")
+
+
 if __name__ == '__main__':
     # prep_caltech()
-    prep_citypersons()
+    # prep_citypersons()
+    prep_penn_fudan()

@@ -451,10 +451,10 @@ class ResidualBlock(nn.Module):
         return x + self.conv2(self.conv1(x))
 
 
-def load_yolo_model():
+def load_yolo_model(path: str = 'yolov8n.pt'):
     from ultralytics import YOLO # type: ignore
     
-    model = YOLO("yolov8n.pt")
+    model = YOLO(path)
     return model
 
 def load_detr_model(dataloader=None, device=None):
@@ -488,13 +488,11 @@ def load_custom_model(device='cpu', num_classes=2, input_size=640):
 def load_rcnn_model(device):
     import torchvision
     from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
-
-    in_features = model.roi_heads.box_predictor.cls_score.in_features  # type: ignore
+    
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="DEFAULT")
+    in_features = model.roi_heads.box_predictor.cls_score.in_features # type: ignore
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, 2)
 
     return model.to(device)
-
 
 #endregion

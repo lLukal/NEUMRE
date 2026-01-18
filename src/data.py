@@ -66,32 +66,68 @@ def collate_fn(batch):
     images, targets = zip(*batch)
     return list(images), list(targets)
 
+def detr_collate_fn(batch):
+    images, targets = zip(*batch)
+
+    # stack images
+    images = torch.stack(images)
+
+    detr_targets = []
+
+    for img, target in zip(images, targets):
+        h, w = img.shape[1:]
+
+        boxes = target["boxes"].clone()
+
+        if boxes.numel() > 0:
+            # convert x1,y1,x2,y2 → cx,cy,w,h
+            x1, y1, x2, y2 = boxes.unbind(1)
+            cx = (x1 + x2) / 2 / w
+            cy = (y1 + y2) / 2 / h
+            bw = (x2 - x1) / w
+            bh = (y2 - y1) / h
+            boxes = torch.stack([cx, cy, bw, bh], dim=1)
+
+        detr_targets.append({
+            "class_labels": target["labels"],
+            "boxes": boxes
+        })
+
+    return images, detr_targets
+
 def load_caltech_dataset(split="train"):
-    dataset = YoloDataset("../data/yolo/caltech", split=split)
+    dataset = DLDataset("../data/yolo/caltech", split=split)
     return dataset
 
 def load_citypersons_dataset(split="train"):
-    dataset = YoloDataset("../data/yolo/citypersons", split=split)
+    dataset = DLDataset("../data/yolo/citypersons", split=split)
     return dataset
 
+def load_penn_fudan_dataset(split="train"):
+    dataset = DLDataset("../data/yolo/penn_fudan", split=split)
+    return dataset
 
 #endregion
 #region API
 
-def load_dataset(dataset_type: DatasetType):
-    print('\tLoading dataset...')
+def load_dataset(dataset_type: DatasetType, model_type: ModelType = ModelType.YOLO, split = 'train'):
+    print(f'\tLoading dataset (split: {split})...')
     dataset = None
 
     if dataset_type == DatasetType.CALTECH:
-        dataset = load_caltech_dataset()
+        dataset = load_caltech_dataset(split)
     elif dataset_type == DatasetType.CITYPERSONS:
-        dataset = load_citypersons_dataset()
+        dataset = load_citypersons_dataset(split)
+    elif dataset_type == DatasetType.PENN_FUDAN:
+        dataset = load_penn_fudan_dataset(split)
     else:
         raise AttributeError('Invalid Dataset Type')
     
-    loader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=collate_fn)
+    if model_type != ModelType.DETR:
+        loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=collate_fn)
+    else:
+        loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=detr_collate_fn)
     
     return loader
-    
     
 #endregion

@@ -13,6 +13,7 @@ from PIL import Image
 class DatasetType(Enum):
     CALTECH = 'caltech'
     CITYPERSONS = 'citypersons'
+    PENN_FUDAN = 'penn_fudan'
 
 class ModelType(Enum):
     YOLO = 'yolo'
@@ -20,7 +21,7 @@ class ModelType(Enum):
     DETR = 'detr'
     CUSTOM = 'custom'
 
-class YoloDataset(Dataset):
+class DLDataset(Dataset):
     """
     Generic PyTorch Dataset for YOLO-format datasets (images + labels)
     Returns:
