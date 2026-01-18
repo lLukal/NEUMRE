@@ -10,7 +10,7 @@ from data import read_seq, read_vbb
 
 def prep_caltech(
     caltech_root='../data/caltech',
-    output_root="..data/yolo/caltech",
+    output_root="../data/yolo/caltech",
     frame_stride=75,
 ):
     print('\nStarting caltech dataset prep...')

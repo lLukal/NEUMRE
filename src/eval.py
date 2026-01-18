@@ -11,6 +11,7 @@ from torchmetrics.detection.mean_ap import MeanAveragePrecision
 import warnings
 import torchvision
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from models import CustomPedestrianDetector
 from torchvision.ops import box_iou
 
 #region HELPERS
@@ -204,6 +205,112 @@ def evaluate_rcnn(model, val_loader, device):
     return (val_loss / len(val_loader)), map_results
 
 
+def evaluate_custom(model, val_loader, device):
+    """Evaluate custom model and compute mAP metrics."""
+    metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox")
+    val_loss = 0
+    num_batches = 0
+
+    for images, targets in tqdm(val_loader, desc="Evaluating Custom Model"):
+        images = [img.to(device) for img in images]
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+        # Compute validation loss
+        model.train()
+        with torch.no_grad():
+            loss_dict = model(images, targets)
+            loss = loss_dict['loss']
+            val_loss += loss.item()
+            num_batches += 1
+
+        # Get predictions for mAP
+        model.eval()
+        with torch.no_grad():
+            outputs = model(images)
+
+        # Format predictions and targets for torchmetrics
+        preds = []
+        gts = []
+        for out, tgt in zip(outputs, targets):
+            preds.append({
+                'boxes': out['boxes'].to(device),
+                'scores': out['scores'].to(device),
+                'labels': out['labels'].to(device),
+            })
+            gts.append({
+                'boxes': tgt['boxes'].to(device),
+                'labels': tgt['labels'].to(device),
+            })
+        
+        metric.update(preds, gts)
+
+    map_results = metric.compute()
+    avg_val_loss = val_loss / max(num_batches, 1)
+    return avg_val_loss, map_results
+
+
+class CustomPredictor:
+    """Predictor class for custom model, compatible with explore.py visualization."""
+    def __init__(self, weight_path, num_classes=2, input_size=640):
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        self.input_size = input_size
+        
+        self.model = CustomPedestrianDetector(
+            num_classes=num_classes,
+            num_anchors=9,
+            input_size=input_size
+        )
+        
+        self.model.load_state_dict(torch.load(weight_path, map_location=self.device))
+        self.model.to(self.device)
+        self.model.eval()
+
+    def predict(self, image_path, confidence_threshold=0.5):
+        """Run inference on a single image and return annotated image."""
+        img = cv2.imread(image_path)
+        if img is None:
+            return None
+
+        orig_h, orig_w = img.shape[:2]
+        
+        # Resize to input size
+        img_resized = cv2.resize(img, (self.input_size, self.input_size))
+        
+        # Prepare tensor
+        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model(img_tensor)[0]
+
+        boxes = outputs['boxes'].cpu().numpy()
+        scores = outputs['scores'].cpu().numpy()
+        labels = outputs['labels'].cpu().numpy()
+
+        for box, score, label in zip(boxes, scores, labels):
+            if score > confidence_threshold:
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(img_resized, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(img_resized, f"{score:.2f}", (x1, y1-5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        return img_resized
+
+    def predict_tensor(self, image):
+        """Run inference on a tensor/numpy image and return raw outputs."""
+        if isinstance(image, np.ndarray):
+            img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            img_resized = cv2.resize(img_rgb, (self.input_size, self.input_size))
+            img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).unsqueeze(0).to(self.device)
+        else:
+            img_tensor = image.to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model(img_tensor)[0]
+        
+        return outputs
+
+
 def evaluate_detr_final(model, loader, device, weights_path):
     pass
 
@@ -306,7 +413,14 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType, weights_path:
 
 
         elif model_type == ModelType.CUSTOM:
-            model = load_custom_model()
+            model = load_custom_model(device=device, num_classes=2)
+            model.load_state_dict(torch.load(weights_path, map_location=device))
+            model.to(device)
+            val_loss, map_results = evaluate_custom(model, dataloader, device)
+            print(f"Validation Loss: {val_loss:.4f}")
+            print(f"mAP: {map_results['map'].item():.4f}")
+            print(f"mAP@50: {map_results['map_50'].item():.4f}")
+            print(f"mAP@75: {map_results['map_75'].item():.4f}")
 
     except Exception as e:
         print(e)
