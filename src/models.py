@@ -26,24 +26,24 @@ class CustomPedestrianDetector(nn.Module):
         - targets: list of dicts with 'boxes' [N, 4] and 'labels' [N]
     """
     
-    def __init__(self, num_classes=2, num_anchors=9, input_size=640):
+    def __init__(self, num_classes=2, num_anchors=9, input_size=416):
         """
         Args:
             num_classes: Number of classes (default 2: background + pedestrian)
             num_anchors: Number of anchor boxes per grid cell for RPN
-            input_size: Expected input image size (square)
+            input_size: Expected input image size (square) - reduced to 416 for faster training
         """
         super(CustomPedestrianDetector, self).__init__()
         
         self.num_classes = num_classes
         self.num_anchors = num_anchors
         self.input_size = input_size
-        self.feature_channels = 256
+        self.feature_channels = 128  # Reduced from 256
         self.roi_output_size = 7
         
         # Anchor settings for RPN (optimized for pedestrians)
         self.anchor_ratios = [0.5, 1.0, 2.0]
-        self.anchor_scales = [32, 64, 128]
+        self.anchor_scales = [16, 32, 64]  # Smaller scales for smaller input
         
         # Backbone: Lightweight feature extractor
         self.backbone = self._make_backbone()
@@ -53,12 +53,10 @@ class CustomPedestrianDetector(nn.Module):
         self.rpn_cls = nn.Conv2d(256, num_anchors, kernel_size=1)  # objectness
         self.rpn_reg = nn.Conv2d(256, num_anchors * 4, kernel_size=1)  # box deltas
         
-        # ROI Head: classification and box regression
+        # ROI Head: classification and box regression (simplified)
         roi_input_features = self.feature_channels * self.roi_output_size * self.roi_output_size
         self.roi_head = nn.Sequential(
-            nn.Linear(roi_input_features, 256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, 128),
+            nn.Linear(roi_input_features, 128),
             nn.ReLU(inplace=True),
         )
         self.cls_head = nn.Linear(128, num_classes)
@@ -69,7 +67,7 @@ class CustomPedestrianDetector(nn.Module):
         self.roi_lambda = 1.0
         
     def _make_backbone(self):
-        """Create lightweight CNN backbone."""
+        """Create simple CNN backbone - much simpler for faster training."""
         return nn.Sequential(
             # Stage 1: input -> /2
             nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
@@ -82,15 +80,14 @@ class CustomPedestrianDetector(nn.Module):
             nn.ReLU(inplace=True),
             
             # Stage 3: /4 -> /8
-            ConvBlock(64, 128, stride=2),
-            ResidualBlock(128),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
             
             # Stage 4: /8 -> /16
-            ConvBlock(128, 256, stride=2),
-            ResidualBlock(256),
-            
-            # Final conv to get feature_channels
-            ConvBlock(256, self.feature_channels, stride=1),
+            nn.Conv2d(128, self.feature_channels, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(self.feature_channels),
+            nn.ReLU(inplace=True),
         )
     
     def forward(self, images, targets=None):
@@ -197,16 +194,16 @@ class CustomPedestrianDetector(nn.Module):
     def _compute_loss(self, features, rpn_cls, rpn_reg, anchors, targets, feat_h, feat_w, device):
         """Compute Faster R-CNN losses."""
         batch_size = features.shape[0]
-        
+
         # Reshape RPN outputs
         rpn_cls = rpn_cls.permute(0, 2, 3, 1).contiguous().view(batch_size, -1)
         rpn_reg = rpn_reg.permute(0, 2, 3, 1).contiguous().view(batch_size, -1, 4)
-        
-        total_rpn_cls_loss = torch.tensor(0.0, device=device)
-        total_rpn_reg_loss = torch.tensor(0.0, device=device)
-        total_roi_cls_loss = torch.tensor(0.0, device=device)
-        total_roi_reg_loss = torch.tensor(0.0, device=device)
-        
+
+        rpn_cls_losses = []
+        rpn_reg_losses = []
+        roi_cls_losses = []
+        roi_reg_losses = []
+
         for b in range(batch_size):
             target = targets[b]
             gt_boxes = target['boxes']
@@ -236,20 +233,22 @@ class CustomPedestrianDetector(nn.Module):
                 rpn_cls_targets = torch.zeros_like(rpn_labels, dtype=torch.float32)
                 rpn_cls_targets[pos_mask] = 1.0
                 valid_mask = pos_mask | neg_mask
-                total_rpn_cls_loss += F.binary_cross_entropy_with_logits(
+                rpn_cls_loss = F.binary_cross_entropy_with_logits(
                     rpn_cls[b][valid_mask], rpn_cls_targets[valid_mask], reduction='mean'
                 )
+                rpn_cls_losses.append(rpn_cls_loss)
             
             # RPN regression loss (only for positive anchors)
             if pos_mask.any():
                 pos_anchors = anchors[pos_mask]
                 pos_gt_boxes = gt_boxes[matched_gt_idx[pos_mask]]
-                
+
                 # Compute regression targets
                 target_deltas = self._compute_box_deltas(pos_anchors, pos_gt_boxes)
                 pred_deltas = rpn_reg[b][pos_mask]
-                
-                total_rpn_reg_loss += F.smooth_l1_loss(pred_deltas, target_deltas, reduction='mean')
+
+                rpn_reg_loss = F.smooth_l1_loss(pred_deltas, target_deltas, reduction='mean')
+                rpn_reg_losses.append(rpn_reg_loss)
             
             # Generate proposals for ROI head
             with torch.no_grad():
@@ -298,7 +297,8 @@ class CustomPedestrianDetector(nn.Module):
                 roi_labels = torch.zeros(sample_idx.shape[0], dtype=torch.long, device=device)
                 roi_labels[:num_pos] = gt_labels[matched_gt_prop[pos_idx]].long()
                 
-                total_roi_cls_loss += F.cross_entropy(cls_logits, roi_labels)
+                roi_cls_loss = F.cross_entropy(cls_logits, roi_labels)
+                roi_cls_losses.append(roi_cls_loss)
                 
                 # ROI regression loss (only for positive proposals)
                 if num_pos > 0:
@@ -313,13 +313,25 @@ class CustomPedestrianDetector(nn.Module):
                     pred_box_deltas = pos_box_deltas.view(num_pos, self.num_classes, 4)
                     pred_box_deltas = pred_box_deltas[idx, pos_labels]
                     
-                    total_roi_reg_loss += F.smooth_l1_loss(pred_box_deltas, target_box_deltas, reduction='mean')
+                    roi_reg_loss = F.smooth_l1_loss(pred_box_deltas, target_box_deltas, reduction='mean')
+                    roi_reg_losses.append(roi_reg_loss)
         
+        # Sum all losses (if empty, use torch.tensor(0.0, device=device, requires_grad=True))
+        def sum_losses(losses):
+            if len(losses) == 0:
+                return torch.tensor(0.0, device=device, requires_grad=True)
+            return torch.stack(losses).mean()
+
+        total_rpn_cls_loss = sum_losses(rpn_cls_losses)
+        total_rpn_reg_loss = sum_losses(rpn_reg_losses)
+        total_roi_cls_loss = sum_losses(roi_cls_losses)
+        total_roi_reg_loss = sum_losses(roi_reg_losses)
+
         total_loss = (
             self.rpn_lambda * (total_rpn_cls_loss + total_rpn_reg_loss) +
             self.roi_lambda * (total_roi_cls_loss + total_roi_reg_loss)
         ) / batch_size
-        
+
         return {
             'loss': total_loss,
             'loss_rpn_cls': total_rpn_cls_loss / batch_size,
@@ -400,14 +412,14 @@ class CustomPedestrianDetector(nn.Module):
                 class_boxes = self._apply_box_deltas(proposals, class_deltas)
                 class_boxes = class_boxes.clamp(min=0, max=self.input_size)
                 
-                # Filter by score
-                mask = class_scores > 0.5
+                # Filter by score (lowered threshold to 0.05 to see more detections)
+                mask = class_scores > 0.05
                 if mask.any():
                     filtered_boxes = class_boxes[mask]
                     filtered_scores = class_scores[mask]
                     
                     # NMS per class
-                    keep = nms(filtered_boxes, filtered_scores, iou_threshold=0.45)
+                    keep = nms(filtered_boxes, filtered_scores, iou_threshold=0.5)
                     all_boxes.append(filtered_boxes[keep])
                     all_scores.append(filtered_scores[keep])
                     all_labels.append(torch.full((keep.shape[0],), c, device=device, dtype=torch.long))
@@ -466,14 +478,14 @@ def load_detr_model(dataloader=None, device=None):
 
     return model, feature_extractor
 
-def load_custom_model(device='cpu', num_classes=2, input_size=640):
+def load_custom_model(device='cpu', num_classes=2, input_size=416):
     """
     Load custom pedestrian detection model.
     
     Args:
         device: Device to load model on ('cpu' or 'cuda')
         num_classes: Number of classes (default 2: background + pedestrian)
-        input_size: Input image size (default 640)
+        input_size: Input image size (default 416 for faster training)
         
     Returns:
         CustomPedestrianDetector model on specified device
