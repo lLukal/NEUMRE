@@ -1,14 +1,14 @@
+import sys
 import cv2
 import numpy as np
 from pathlib import Path
 import torch
 from ultralytics import YOLO # type: ignore
+from utils import DatasetType, ModelType # type: ignore
+
+#region DRAW
 
 def draw_yolo_labels(image, label_path, color=(0, 255, 0)):
-    """
-    image: BGR image (cv2)
-    label_path: path to YOLO .txt label
-    """
     h, w = image.shape[:2]
 
     if not label_path.exists():
@@ -36,11 +36,7 @@ def draw_yolo_labels(image, label_path, color=(0, 255, 0)):
 
     return image
 
-def draw_yolo_predictions(image, results, conf=0.01):
-    """
-    image: BGR image
-    results: Ultralytics YOLO result object
-    """
+def draw_yolo_predictions(image, results, conf=0.25):
     for box in results.boxes:
         if box.conf < conf:
             continue
@@ -61,39 +57,39 @@ def draw_yolo_predictions(image, results, conf=0.01):
 
     return image
 
-def visualize_sample(
-    dataset_root,
-    weights_path,
-    split="val",
-    index=0,
-    model_type="yolo",  # "yolo", "torch", or "custom"
-):
-    dataset_root = Path(dataset_root)
-    img_dir = dataset_root / "images" / split
-    lbl_dir = dataset_root / "labels" / split
+# def visualize_sample(
+#     dataset_root,
+#     weights_path,
+#     split="val",
+#     index=0,
+#     model_type="yolo",  # "yolo", "torch", or "custom"
+# ):
+#     dataset_root = Path(dataset_root)
+#     img_dir = dataset_root / "images" / split
+#     lbl_dir = dataset_root / "labels" / split
 
-    img_paths = sorted(list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png")))
-    img_path = img_paths[index]
-    lbl_path = lbl_dir / img_path.with_suffix(".txt").name
+#     img_paths = sorted(list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png")))
+#     img_path = img_paths[index]
+#     lbl_path = lbl_dir / img_path.with_suffix(".txt").name
 
-    image = cv2.imread(str(img_path))
-    gt_img = image.copy() # type: ignore
-    pred_img = image.copy() # type: ignore
+#     image = cv2.imread(str(img_path))
+#     gt_img = image.copy() # type: ignore
+#     pred_img = image.copy() # type: ignore
 
-    # Draw GT
-    gt_img = draw_yolo_labels(gt_img, lbl_path)
+#     # Draw GT
+#     gt_img = draw_yolo_labels(gt_img, lbl_path)
 
-    if model_type == "yolo":
-        model = YOLO(weights_path)
-        results = model(img_path, verbose=False, conf=0.01)[0]
-        print("YOLO boxes:", 0 if results.boxes is None else len(results.boxes))
-        pred_img = draw_yolo_predictions(pred_img, results, conf=0.05)
+#     if model_type == "yolo":
+#         model = YOLO(weights_path)
+#         results = model(img_path, verbose=False, conf=0.01)[0]
+#         print("YOLO boxes:", 0 if results.boxes is None else len(results.boxes))
+#         pred_img = draw_yolo_predictions(pred_img, results, conf=0.05)
 
-    elif model_type == "torch":
-        model, device = load_torch_model(weights_path)
-        outputs = run_torch_inference(model, device, image)
-        print("Torch boxes:", outputs["boxes"].shape[0])
-        pred_img = draw_torch_predictions(pred_img, outputs, conf=0.5)
+#     elif model_type == "torch":
+#         model, device = load_torch_model(weights_path)
+#         outputs = run_torch_inference(model, device, image)
+#         print("Torch boxes:", outputs["boxes"].shape[0])
+#         pred_img = draw_torch_predictions(pred_img, outputs, conf=0.5)
 
     elif model_type == "custom":
         model, device = load_custom_model_for_inference(weights_path)
@@ -101,20 +97,20 @@ def visualize_sample(
         print("Custom boxes:", outputs["boxes"].shape[0])
         pred_img = draw_torch_predictions(pred_img, outputs, conf=0.9)  # High confidence only
 
-    else:
-        raise ValueError("model_type must be 'yolo', 'torch', or 'custom'")
+#     else:
+#         raise ValueError("model_type must be 'yolo', 'torch', or 'custom'")
 
-    vis = np.hstack([gt_img, pred_img])
+#     vis = np.hstack([gt_img, pred_img])
 
-    max_width = 1200
-    h, w = vis.shape[:2]
-    if w > max_width:
-        scale = max_width / w
-        vis = cv2.resize(vis, (int(w * scale), int(h * scale)))
+#     max_width = 1200
+#     h, w = vis.shape[:2]
+#     if w > max_width:
+#         scale = max_width / w
+#         vis = cv2.resize(vis, (int(w * scale), int(h * scale)))
 
-    cv2.imshow("GT | Predictions", vis)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+#     cv2.imshow("GT | Predictions", vis)
+#     cv2.waitKey(0)
+#     cv2.destroyAllWindows()
 
 def load_torch_model(weights_path, device="cuda"):
     import torchvision
@@ -198,18 +194,106 @@ def draw_torch_predictions_high_only(image, outputs, conf=0.9):
 
     return image
 
-def run_torch_inference(model, device, image):
-    """
-    image: BGR OpenCV image
-    """
+#endregion
+#region MODEL
+
+def load_yolo(weights_path):
+    return YOLO(weights_path), torch.device("cpu")
+
+def load_faster_rcnn(weights_path, device):
+    import torchvision
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=None, num_classes=2)
+    model.load_state_dict(torch.load(weights_path, map_location=device))
+    return model.to(device).eval()
+
+def load_custom(weights_path, device):
+    # import torchvision
+    # model = torchvision.models.detection.ssd300_vgg16(weights=None, num_classes=2)
+    # model.load_state_dict(torch.load(weights_path, map_location=device))
+    # return model.to(device).eval()
+    pass
+
+def load_detr(weights_path, device):
+    # Load from Torch Hub to ensure the architecture matches the citypersons/detr weights
+    model = torch.hub.load('facebookresearch/detr:main', 'detr_resnet50', pretrained=False, num_classes=2)
+    checkpoint = torch.load(weights_path, map_location=device)
+    model.load_state_dict(checkpoint['model'] if 'model' in checkpoint else checkpoint, strict=False) # type: ignore
+    return model.to(device).eval() # type: ignore
+
+def run_torchvision_inference(model, device, image):
     img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     img_tensor = torch.from_numpy(img_rgb).float().permute(2, 0, 1) / 255.0
-    img_tensor = img_tensor.unsqueeze(0).to(device)
-
     with torch.no_grad():
-        outputs = model(img_tensor)[0]
+        return model([img_tensor.to(device)])[0]
 
-    return outputs
+def run_detr_inference(model, device, image):
+    h, w = image.shape[:2]
+    img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    img_tensor = torch.from_numpy(img_rgb).float().permute(2, 0, 1) / 255.0
+    # DETR specific normalization
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    img_tensor = (img_tensor - mean) / std
+    
+    with torch.no_grad():
+        outputs = model(img_tensor.unsqueeze(0).to(device))
+    
+    probas = outputs['pred_logits'].softmax(-1)[0, :, :-1]
+    scores, _ = probas.max(-1)
+    bboxes = outputs['pred_boxes'][0] # cxcywh normalized
+    
+    # Convert to xyxy pixels
+    x_c, y_c, bw, bh = bboxes.unbind(-1)
+    b = [(x_c - 0.5 * bw), (y_c - 0.5 * bh), (x_c + 0.5 * bw), (y_c + 0.5 * bh)]
+    pixel_boxes = torch.stack(b, dim=-1) * torch.tensor([w, h, w, h], device=device)
+    
+    return {"boxes": pixel_boxes, "scores": scores}
+
+#endregion
+#region VISUALIZE
+
+def visualize_sample(dataset_root, weights_path, split="val", index=0, model_type="yolo"):
+    dataset_root = Path(dataset_root)
+    img_paths = sorted(list((dataset_root/"images"/split).glob("*.jpg")) + list((dataset_root/"images"/split).glob("*.png")))
+    img_path = img_paths[index]
+    lbl_path = dataset_root/"labels"/split/img_path.with_suffix(".txt").name
+
+    image = cv2.imread(str(img_path))
+    gt_img, pred_img = image.copy(), image.copy() # type: ignore
+    gt_img = draw_yolo_labels(gt_img, lbl_path)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if model_type == "yolo":
+        model, _ = load_yolo(weights_path)
+        results = model(img_path, verbose=False, conf=0.01)[0]
+        pred_img = draw_yolo_predictions(pred_img, results, conf=0.05)
+    
+    elif model_type in ["rcnn", "custom", "detr"]:
+        if model_type == "rcnn":
+            model = load_faster_rcnn(weights_path, device)
+            outputs = run_torchvision_inference(model, device, image)
+        elif model_type == "custom":
+            model = load_custom(weights_path, device)
+            outputs = run_torchvision_inference(model, device, image)
+        elif model_type == "detr":
+            model = load_detr(weights_path, device)
+            outputs = run_detr_inference(model, device, image)
+            
+        print(f"{model_type} boxes:", outputs["boxes"].shape[0])
+        pred_img = draw_torch_predictions(pred_img, outputs, conf=0.5)
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
+
+    vis = np.hstack([gt_img, pred_img])
+    if vis.shape[1] > 1200:
+        scale = 1200 / vis.shape[1]
+        vis = cv2.resize(vis, (int(vis.shape[1] * scale), int(vis.shape[0] * scale)))
+
+    cv2.imshow("GT | Predictions", vis)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
 
 
 def load_custom_model_for_inference(weights_path, input_size=416, device="cuda"):
@@ -300,10 +384,46 @@ def debug_check_labels(dataset_root, split="train", num_samples=3):
                         print(f"  Box {j}: class={cls}, cx={cx}, cy={cy}, w={bw}, h={bh}")
     print("================================\n")
 
+#endregion
+#region MAIN
 
 if __name__ == '__main__':
+    import torch
+    torch.cuda.empty_cache()
+    import gc
+    gc.collect()
+
+    # parse system parameters
+    args = sys.argv
+    if len(args) < 4:
+        print('Usage: python train.py <dataset> <model> <weights_path> [<split>] [<sample_index>]')
+        print(f'<dataset> - options:\n\t\t' + '\n\t\t'.join([d.value for d in DatasetType]))
+        print(f'<model> - options:\n\t\t' + '\n\t\t'.join([m.value for m in ModelType]))
+        print(f'<weights_path> - filepath to weights')
+        print(f'[<split>] - dataset split to use')
+        print(f'[<sample_index>] - index of the sample in the split')
+        exit(1)
+
+    if len(args) >= 5:
+        split=args[4]
+    else:
+        split='val'
+    if len(args) >= 6:
+        index=int(args[5])
+    else:
+        index=1
+
+    # run
+    visualize_sample(
+        dataset_root=f'../data/yolo/{args[1]}', # "../data/yolo/penn_fudan"
+        weights_path=args[3], # "../trained_models/detr_citypersons.pth"
+        split=split,
+        index=index,
+        model_type=args[2]
+    )
+
     # First check if labels are correct
-    debug_check_labels("../data/yolo/citypersons", split="val", num_samples=3)
+    # debug_check_labels("../data/yolo/citypersons", split="val", num_samples=3)
     
     # Save first 30 images
     dataset_root = Path("../data/yolo/citypersons")

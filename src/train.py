@@ -312,7 +312,7 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType, overfit_test=
     print('Starting training pipeline...')
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # device = "cpu"
-    save_dir = './trained_models'
+    save_dir = '../trained_models'
 
     try:
         # load and prepare dataset
