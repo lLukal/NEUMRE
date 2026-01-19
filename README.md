@@ -39,6 +39,7 @@ sudo docker compose up # or just docker compose up
 ### Setup
 
 ```
+pip install -r requirements.txt
 cd src
 python prep.py
 ```
