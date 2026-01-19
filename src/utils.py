@@ -78,7 +78,9 @@ class DLDataset(Dataset):
                         x2 = (cx + bw/2) * w
                         y2 = (cy + bh/2) * h
                         boxes_list.append([x1, y1, x2, y2])
-                        labels_list.append(int(cls))
+                        # IMPORTANT: Add 1 to class because class 0 = background in detection models
+                        # YOLO labels use 0 for pedestrian, but Faster R-CNN needs 1 for pedestrian
+                        labels_list.append(int(cls) + 1)
 
             if len(boxes_list) == 0:
                 boxes = torch.zeros((0, 4), dtype=torch.float32)

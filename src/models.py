@@ -127,8 +127,9 @@ class CustomPedestrianDetector(nn.Module):
         )
     
     def forward(self, images, targets=None):
+        scales = None
         if isinstance(images, list):
-            images = self._prepare_images(images)
+            images, scales = self._prepare_images(images) # type: ignore
         
         batch_size = images.shape[0]
         device = images.device
@@ -143,22 +144,28 @@ class CustomPedestrianDetector(nn.Module):
         rpn_box_deltas = self.rpn_reg(rpn_features)  # [B, num_anchors*4, H, W]
         
         # Generate anchors
-        anchors = self._generate_anchors(feat_h, feat_w, device)
+        anchors = self._generate_anchors(feat_h, feat_w, device) # type: ignore
         
         if self.training and targets is not None:
             return self._compute_loss(
                 features, rpn_cls_logits, rpn_box_deltas, 
-                anchors, targets, feat_h, feat_w, device
-            )
+                anchors, targets, feat_h, feat_w, device, scales
+            ) # type: ignore
         else:
             return self._inference(
                 features, rpn_cls_logits, rpn_box_deltas,
                 anchors, feat_h, feat_w, device
-            )
+            ) # type: ignore
     
     def _prepare_images(self, images):
         processed = []
+        scales = []
         for img in images:
+            _, orig_h, orig_w = img.shape
+            scale_x = self.input_size / orig_w
+            scale_y = self.input_size / orig_h
+            scales.append((scale_x, scale_y))
+            
             img = F.interpolate(
                 img.unsqueeze(0), 
                 size=(self.input_size, self.input_size), 
@@ -166,7 +173,7 @@ class CustomPedestrianDetector(nn.Module):
                 align_corners=False
             )
             processed.append(img)
-        return torch.cat(processed, dim=0)
+        return torch.cat(processed, dim=0), scales
     
     def _generate_anchors(self, feat_h, feat_w, device):
         stride_h = self.input_size / feat_h
@@ -211,7 +218,7 @@ class CustomPedestrianDetector(nn.Module):
         from torchvision.ops import roi_align
         return roi_align(features, boxes, output_size, spatial_scale=1.0/16.0) # type: ignore
     
-    def _compute_loss(self, features, rpn_cls, rpn_reg, anchors, targets, feat_h, feat_w, device):
+    def _compute_loss(self, features, rpn_cls, rpn_reg, anchors, targets, feat_h, feat_w, device, scales=None):
         batch_size = features.shape[0]
 
         # Reshape RPN outputs
@@ -225,11 +232,22 @@ class CustomPedestrianDetector(nn.Module):
 
         for b in range(batch_size):
             target = targets[b]
-            gt_boxes = target['boxes']
+            gt_boxes = target['boxes'].clone()
             gt_labels = target['labels']
             
             if gt_boxes.shape[0] == 0:
                 continue
+            
+            # Scale GT boxes to input_size coordinates if scales provided
+            if scales is not None:
+                scale_x, scale_y = scales[b]
+                gt_boxes[:, 0] *= scale_x  # x1
+                gt_boxes[:, 2] *= scale_x  # x2
+                gt_boxes[:, 1] *= scale_y  # y1
+                gt_boxes[:, 3] *= scale_y  # y2
+            
+            # Clamp boxes to valid range
+            gt_boxes = gt_boxes.clamp(min=0, max=self.input_size)
             
             # Compute IoU between anchors and ground truth
             ious = box_iou(anchors, gt_boxes)
@@ -284,13 +302,13 @@ class CustomPedestrianDetector(nn.Module):
             proposal_ious = box_iou(proposals, gt_boxes)
             max_iou_prop, matched_gt_prop = proposal_ious.max(dim=1)
             
-            # Positive: IoU >= 0.5, Negative: IoU < 0.5
-            pos_prop_mask = max_iou_prop >= 0.5
-            neg_prop_mask = max_iou_prop < 0.5
+            # Positive: IoU >= 0.3 (lowered from 0.5), Negative: IoU < 0.3
+            pos_prop_mask = max_iou_prop >= 0.3
+            neg_prop_mask = max_iou_prop < 0.3
             
-            # Sample balanced batch
-            num_pos = min(16, pos_prop_mask.sum().item())
-            num_neg = min(48, neg_prop_mask.sum().item())
+            # Sample balanced batch - equal pos/neg to avoid class imbalance
+            num_pos = min(32, pos_prop_mask.sum().item())
+            num_neg = min(num_pos, neg_prop_mask.sum().item())  # Match neg to pos count
             
             if num_pos > 0:
                 pos_idx = pos_prop_mask.nonzero(as_tuple=True)[0][:num_pos]
@@ -316,7 +334,9 @@ class CustomPedestrianDetector(nn.Module):
                 roi_labels = torch.zeros(sample_idx.shape[0], dtype=torch.long, device=device)
                 roi_labels[:num_pos] = gt_labels[matched_gt_prop[pos_idx]].long()
                 
-                roi_cls_loss = F.cross_entropy(cls_logits, roi_labels)
+                # Class weights: penalize missing pedestrians more than false positives
+                class_weights = torch.tensor([1.0, 3.0], device=device)  # bg=1, ped=3
+                roi_cls_loss = F.cross_entropy(cls_logits, roi_labels, weight=class_weights)
                 roi_cls_losses.append(roi_cls_loss)
                 
                 # ROI regression loss (only for positive proposals)
@@ -429,8 +449,8 @@ class CustomPedestrianDetector(nn.Module):
                 class_boxes = self._apply_box_deltas(proposals, class_deltas)
                 class_boxes = class_boxes.clamp(min=0, max=self.input_size)
                 
-                # Filter by score (lowered threshold to 0.05 to see more detections)
-                mask = class_scores > 0.05
+                # Filter by score - only keep high confidence detections (>0.9)
+                mask = class_scores > 0.9
                 if mask.any():
                     filtered_boxes = class_boxes[mask]
                     filtered_scores = class_scores[mask]
