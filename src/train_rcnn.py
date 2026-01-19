@@ -31,7 +31,7 @@ class FasterCnnDataset(Dataset):
     def __getitem__(self, idx):
         img_path = os.path.join(self.image_root_dir, self.imgs[idx])
         img = cv2.imread(img_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) # type: ignore
 
         img /= 255.0
         img = self.editImage(img)
@@ -140,7 +140,7 @@ class CityPersonsModel(FasterCnnDataset):
 
 def get_model(num_classes):
     model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="DEFAULT")
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    in_features = model.roi_heads.box_predictor.cls_score.in_features # type: ignore
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
     return model
@@ -162,7 +162,7 @@ def validate(model, val_loader, device):
             model.train()
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values())
-            val_loss += losses.item()
+            val_loss += losses.item() # type: ignore
 
             model.eval()
             outputs = model(images)
@@ -187,10 +187,10 @@ def train(model, train_loader, device):
         losses = sum(loss for loss in loss_dict.values())
 
         optimizer.zero_grad()
-        losses.backward()
+        losses.backward() # type: ignore
         optimizer.step()
 
-        train_loss += losses.item()
+        train_loss += losses.item() # type: ignore
     
     return train_loss / len(train_loader)
 

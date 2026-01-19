@@ -24,7 +24,7 @@ def prep_caltech(
         lbl_out.mkdir(parents=True, exist_ok=True)
         set_dirs = sorted((caltech_root / split).iterdir())
 
-        for set_dir in tqdm(set_dirs, desc=f"{split} sets", leave=False):            # Caltech: Train/setxx/setxx/*.seq
+        for set_dir in tqdm(set_dirs, desc=f"{split} sets", leave=False): # Caltech: Train/setxx/setxx/*.seq
             inner_dir = set_dir / set_dir.name
             if not inner_dir.exists():
                 continue
@@ -111,7 +111,7 @@ def prep_citypersons(
                         out_root / "labels" / split / out_name.replace(".png", ".txt"),
                     )
                 else:
-                    # YOLO allows empty label files
+                    # allow empty label files
                     open(
                         out_root / "labels" / split / out_name.replace(".png", ".txt"),
                         "w",
@@ -204,6 +204,6 @@ def prep_penn_fudan(
 
 
 if __name__ == '__main__':
-    # prep_caltech()
-    # prep_citypersons()
+    prep_caltech()
+    prep_citypersons()
     prep_penn_fudan()

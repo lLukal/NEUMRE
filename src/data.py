@@ -36,8 +36,6 @@ def read_vbb(vbb_path):
     for frame_id, frame_objs in enumerate(obj_lists):
         boxes = []
 
-        # --- CRITICAL FIX ---
-        # frame_objs is often shape (1,), containing a list
         if frame_objs.size == 0:
             annotations[frame_id] = np.zeros((0, 4), dtype=np.float32)
             continue
@@ -48,8 +46,6 @@ def read_vbb(vbb_path):
             objects = frame_objs
 
         for obj in objects:
-            # obj is now a tuple of length 5
-            # obj[1] = bbox [x, y, w, h] shape (1,4)
             pos = np.array(obj[1]).squeeze()
 
             if pos.shape != (4,):

@@ -1,3 +1,4 @@
+from data import load_dataset
 from models import *
 from utils import *
 from torch.utils.data import DataLoader
@@ -9,67 +10,15 @@ import numpy as np
 import os
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 import warnings
-import torchvision
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from models import CustomPedestrianDetector
 from torchvision.ops import box_iou
 
-#region HELPERS
+#region PRIVATE
 
-# helper to convert box formats
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
     b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
          (x_c + 0.5 * w), (y_c + 0.5 * h)]
     return torch.stack(b, dim=-1)
-
-class RCNNPredictor:
-    def __init__(self, weight_path, num_classes=2):
-        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        
-        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=None)
-        in_features = self.model.roi_heads.box_predictor.cls_score.in_features # type: ignore
-        self.model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-        
-        self.model.load_state_dict(torch.load(weight_path, map_location=self.device))
-        self.model.to(self.device)
-        self.model.eval()
-        
-        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-
-
-    def predict(self, image_path, confidence_threshold=0.5):
-        img = cv2.imread(image_path)
-        if img is None:
-            return None
-
-        orig_h, orig_w = img.shape[:2]
-        
-        image_w = 800
-        image_h = int(round(orig_h / orig_w * image_w))
-
-        img_resized = cv2.resize(img, (image_w, image_h))
-        
-        img_prep = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB).astype(np.float32)
-        img_prep = cv2.resize(img_prep, (image_w, image_h))
-
-        img_prep /= 255.0        
-        img_prep = (img_prep - self.mean) / self.std
-        
-        img_tensor = torch.as_tensor(img_prep).permute(2, 0, 1).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            predictions = self.model(img_tensor)[0]
-
-        for i, score in enumerate(predictions['scores']):
-            if score > confidence_threshold:
-                box = predictions['boxes'][i].cpu().numpy()
-
-                cv2.rectangle(img_resized, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
-                cv2.putText(img_resized, f"{score:.2f}", (int(box[0]), int(box[1]-5)), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        return img_resized
 
 def compute_precision_recall(pred_boxes, scores, gt_boxes, iou_threshold=0.5):
     if len(pred_boxes) == 0 or len(gt_boxes) == 0:
@@ -87,10 +36,10 @@ def evaluate_yolo(model, dataset_type):
     metrics = model.val(data=f'../data/yolo/{dataset_type.value}/dataset.yaml')
 
     print("YOLOv8 Evaluation Results:")
-    print(f"  mAP50-95 (COCO-style mAP): {metrics.box.map:.4f}")
-    print(f"  mAP50: {metrics.box.map50:.4f}")
-    print(f"  Mean Precision: {metrics.box.mp:.4f}")
-    print(f"  Mean Recall: {metrics.box.mr:.4f}")
+    print(f"\tmAP50-95 (COCO-style mAP): {metrics.box.map:.4f}")
+    print(f"\tmAP50: {metrics.box.map50:.4f}")
+    print(f"\tMean Precision: {metrics.box.mp:.4f}")
+    print(f"\tMean Recall: {metrics.box.mr:.4f}")
 
 def evaluate_detr(model, dataloader, device, output_dir="./runs/detr", epoch_num=None):
     warnings.filterwarnings("ignore", message=".*meta parameter.*") 
@@ -206,7 +155,6 @@ def evaluate_rcnn(model, val_loader, device):
 
 
 def evaluate_custom(model, val_loader, device):
-    """Evaluate custom model and compute mAP metrics."""
     metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox")
     val_loss = 0
     num_batches = 0
@@ -246,11 +194,15 @@ def evaluate_custom(model, val_loader, device):
 
     map_results = metric.compute()
     avg_val_loss = val_loss / max(num_batches, 1)
+
+    print(f"Validation Loss: {val_loss:.4f}")
+    print(f"mAP: {map_results['map'].item():.4f}")
+    print(f"mAP@50: {map_results['map_50'].item():.4f}")
+    print(f"mAP@75: {map_results['map_75'].item():.4f}")
+
     return avg_val_loss, map_results
 
-
 class CustomPredictor:
-    """Predictor class for custom model, compatible with explore.py visualization."""
     def __init__(self, weight_path, num_classes=2, input_size=640):
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         self.input_size = input_size
@@ -266,7 +218,6 @@ class CustomPredictor:
         self.model.eval()
 
     def predict(self, image_path, confidence_threshold=0.5):
-        """Run inference on a single image and return annotated image."""
         img = cv2.imread(image_path)
         if img is None:
             return None
@@ -297,7 +248,6 @@ class CustomPredictor:
         return img_resized
 
     def predict_tensor(self, image):
-        """Run inference on a tensor/numpy image and return raw outputs."""
         if isinstance(image, np.ndarray):
             img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             img_resized = cv2.resize(img_rgb, (self.input_size, self.input_size))
@@ -309,70 +259,6 @@ class CustomPredictor:
             outputs = self.model(img_tensor)[0]
         
         return outputs
-
-
-def evaluate_detr_final(model, loader, device, weights_path):
-    pass
-
-
-def evaluate_rcnn_final(model, loader, device, weights_path):
-    checkpoint = torch.load(weights_path, map_location=device)
-    model.load_state_dict(checkpoint['model'] if 'model' in checkpoint else checkpoint)
-    model.to(device).eval()  # set to eval mode
-    
-    all_losses = []
-    all_gt_boxes = []
-    all_pred_boxes = []
-    all_scores = []
-    all_labels = []
-
-    # Use model in eval mode, but enable loss computation
-    model.train()  # RCNN returns losses only in train mode
-    with torch.no_grad():
-        for batch in loader:
-            images, targets = batch  # unpack the 2 elements of the tuple
-            images = [img.to(device) for img in images]  # list of images on device
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-            # Get model outputs + loss
-            loss_dict = model(images, targets)
-            total_loss = sum(loss for loss in loss_dict.values())
-            all_losses.append(total_loss.item()) # type: ignore
-
-            # Switch to inference mode to get predictions
-            model.eval()
-            outputs = model(images)
-            model.train()
-
-            # Collect predictions and GT for metrics
-            for i, output in enumerate(outputs):
-                boxes = output['boxes']
-                scores = output['scores']
-                labels = output['labels']
-
-                keep = scores > 0.05
-                all_pred_boxes.append(boxes[keep].cpu())
-                all_scores.append(scores[keep].cpu())
-                all_labels.append(labels[keep].cpu())
-                all_gt_boxes.append(targets[i]['boxes'].cpu())
-
-    # Concatenate all predictions
-    all_pred_boxes = torch.cat(all_pred_boxes)
-    all_scores = torch.cat(all_scores)
-    all_labels = torch.cat(all_labels)
-    all_gt_boxes = torch.cat(all_gt_boxes)
-
-    # Compute precision & recall (IoU=0.5)
-    precision, recall = compute_precision_recall(all_pred_boxes, all_scores, all_gt_boxes, iou_threshold=0.5)
-
-    metrics = {
-        "loss": sum(all_losses) / len(all_losses),
-        "precision": precision,
-        "recall": recall
-    }
-
-    print(metrics)
-    return metrics
 
 #endregion
 #region MAIN
@@ -404,23 +290,21 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType, weights_path:
 
         elif model_type == ModelType.DETR:
             model = load_detr_model(dataloader)
-            evaluate_detr_final(model, dataloader, device, weights_path)
+            # model.load_state_dict(torch.load(weights_path, map_location=device))
+            evaluate_detr(model, dataloader, device)
 
 
         elif model_type == ModelType.RCNN:
             model = load_rcnn_model(device)
-            evaluate_rcnn_final(model, dataloader, device, weights_path)
+            model.load_state_dict(torch.load(weights_path, map_location=device))
+            evaluate_rcnn(model, dataloader, device)
 
 
         elif model_type == ModelType.CUSTOM:
             model = load_custom_model(device=device, num_classes=2)
             model.load_state_dict(torch.load(weights_path, map_location=device))
             model.to(device)
-            val_loss, map_results = evaluate_custom(model, dataloader, device)
-            print(f"Validation Loss: {val_loss:.4f}")
-            print(f"mAP: {map_results['map'].item():.4f}")
-            print(f"mAP@50: {map_results['map_50'].item():.4f}")
-            print(f"mAP@75: {map_results['map_75'].item():.4f}")
+            evaluate_custom(model, dataloader, device)
 
     except Exception as e:
         print(e)

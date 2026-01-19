@@ -1,52 +1,88 @@
-#region PRIVATE
-
+import cv2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from torchvision.ops import nms, box_iou
-
-#endregion
-#region API
-
 import warnings
 from utils import *
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
+#endregion
+#region PRIVATE
+
+class RCNNPredictor:
+    def __init__(self, weight_path, num_classes=2):
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        
+        self.model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=None)
+        in_features = self.model.roi_heads.box_predictor.cls_score.in_features # type: ignore
+        self.model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+        
+        self.model.load_state_dict(torch.load(weight_path, map_location=self.device))
+        self.model.to(self.device)
+        self.model.eval()
+        
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+
+    def predict(self, image_path, confidence_threshold=0.5):
+        img = cv2.imread(image_path)
+        if img is None:
+            return None
+
+        orig_h, orig_w = img.shape[:2]
+        
+        image_w = 800
+        image_h = int(round(orig_h / orig_w * image_w))
+
+        img_resized = cv2.resize(img, (image_w, image_h))
+        
+        img_prep = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB).astype(np.float32)
+        img_prep = cv2.resize(img_prep, (image_w, image_h))
+
+        img_prep /= 255.0        
+        img_prep = (img_prep - self.mean) / self.std
+        
+        img_tensor = torch.as_tensor(img_prep).permute(2, 0, 1).unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            predictions = self.model(img_tensor)[0]
+
+        for i, score in enumerate(predictions['scores']):
+            if score > confidence_threshold:
+                box = predictions['boxes'][i].cpu().numpy()
+
+                cv2.rectangle(img_resized, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                cv2.putText(img_resized, f"{score:.2f}", (int(box[0]), int(box[1]-5)), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        return img_resized
 
 class CustomPedestrianDetector(nn.Module):
     """
-    Lightweight Faster R-CNN-style model for pedestrian detection.
+    Faster R-CNN-style model for pedestrian detection.
     
     Architecture:
         - Backbone: Lightweight CNN feature extractor
         - RPN: Region Proposal Network for generating object proposals
         - ROI Head: ROI Align + classification and box regression heads
     
-    Compatible with PyTorch DataLoader returning (images, targets) where:
-        - images: list of tensors [C, H, W]
-        - targets: list of dicts with 'boxes' [N, 4] and 'labels' [N]
+    Compatible with PyTorch DataLoader returning (images, targets)
     """
-    
-    def __init__(self, num_classes=2, num_anchors=9, input_size=416):
-        """
-        Args:
-            num_classes: Number of classes (default 2: background + pedestrian)
-            num_anchors: Number of anchor boxes per grid cell for RPN
-            input_size: Expected input image size (square) - reduced to 416 for faster training
-        """
+    def __init__(self, num_classes=2, num_anchors=9, input_size=1024):
         super(CustomPedestrianDetector, self).__init__()
         
         self.num_classes = num_classes
         self.num_anchors = num_anchors
         self.input_size = input_size
-        self.feature_channels = 128  # Reduced from 256
+        self.feature_channels = 128
         self.roi_output_size = 7
         
-        # Anchor settings for RPN (optimized for pedestrians)
         self.anchor_ratios = [0.5, 1.0, 2.0]
-        self.anchor_scales = [16, 32, 64]  # Smaller scales for smaller input
+        self.anchor_scales = [16, 32, 64]
         
-        # Backbone: Lightweight feature extractor
+        # Backbone
         self.backbone = self._make_backbone()
         
         # Region Proposal Network (RPN)
@@ -54,7 +90,7 @@ class CustomPedestrianDetector(nn.Module):
         self.rpn_cls = nn.Conv2d(256, num_anchors, kernel_size=1)  # objectness
         self.rpn_reg = nn.Conv2d(256, num_anchors * 4, kernel_size=1)  # box deltas
         
-        # ROI Head: classification and box regression (simplified)
+        # ROI Head
         roi_input_features = self.feature_channels * self.roi_output_size * self.roi_output_size
         self.roi_head = nn.Sequential(
             nn.Linear(roi_input_features, 128),
@@ -68,7 +104,6 @@ class CustomPedestrianDetector(nn.Module):
         self.roi_lambda = 1.0
         
     def _make_backbone(self):
-        """Create simple CNN backbone - much simpler for faster training."""
         return nn.Sequential(
             # Stage 1: input -> /2
             nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
@@ -92,17 +127,6 @@ class CustomPedestrianDetector(nn.Module):
         )
     
     def forward(self, images, targets=None):
-        """
-        Forward pass (Faster R-CNN style).
-        
-        Args:
-            images: list of tensors [C, H, W] or batched tensor [B, C, H, W]
-            targets: list of dicts with 'boxes' and 'labels' (training only)
-            
-        Returns:
-            Training: dict of losses
-            Inference: list of dicts with 'boxes', 'scores', 'labels'
-        """
         if isinstance(images, list):
             images = self._prepare_images(images)
         
@@ -133,7 +157,6 @@ class CustomPedestrianDetector(nn.Module):
             )
     
     def _prepare_images(self, images):
-        """Prepare list of images into batched tensor."""
         processed = []
         for img in images:
             img = F.interpolate(
@@ -146,7 +169,6 @@ class CustomPedestrianDetector(nn.Module):
         return torch.cat(processed, dim=0)
     
     def _generate_anchors(self, feat_h, feat_w, device):
-        """Generate anchor boxes for RPN."""
         stride_h = self.input_size / feat_h
         stride_w = self.input_size / feat_w
         
@@ -164,7 +186,6 @@ class CustomPedestrianDetector(nn.Module):
         return torch.tensor(anchors, device=device, dtype=torch.float32)
     
     def _apply_box_deltas(self, anchors, deltas):
-        """Apply predicted deltas to anchors to get proposals."""
         # anchors: [N, 4] (x1, y1, x2, y2)
         # deltas: [N, 4] (dx, dy, dw, dh)
         widths = anchors[:, 2] - anchors[:, 0]
@@ -187,13 +208,10 @@ class CustomPedestrianDetector(nn.Module):
         return torch.stack([pred_x1, pred_y1, pred_x2, pred_y2], dim=1)
     
     def _roi_align(self, features, boxes, output_size=7):
-        """Simple ROI Align implementation."""
         from torchvision.ops import roi_align
-        # boxes should be [N, 5] with batch index, but we handle single batch
-        return roi_align(features, boxes, output_size, spatial_scale=1.0/16.0)
+        return roi_align(features, boxes, output_size, spatial_scale=1.0/16.0) # type: ignore
     
     def _compute_loss(self, features, rpn_cls, rpn_reg, anchors, targets, feat_h, feat_w, device):
-        """Compute Faster R-CNN losses."""
         batch_size = features.shape[0]
 
         # Reshape RPN outputs
@@ -317,7 +335,7 @@ class CustomPedestrianDetector(nn.Module):
                     roi_reg_loss = F.smooth_l1_loss(pred_box_deltas, target_box_deltas, reduction='mean')
                     roi_reg_losses.append(roi_reg_loss)
         
-        # Sum all losses (if empty, use torch.tensor(0.0, device=device, requires_grad=True))
+        # Sum all losses
         def sum_losses(losses):
             if len(losses) == 0:
                 return torch.tensor(0.0, device=device, requires_grad=True)
@@ -342,7 +360,6 @@ class CustomPedestrianDetector(nn.Module):
         }
     
     def _compute_box_deltas(self, src_boxes, tgt_boxes):
-        """Compute box regression deltas."""
         src_w = src_boxes[:, 2] - src_boxes[:, 0]
         src_h = src_boxes[:, 3] - src_boxes[:, 1]
         src_cx = src_boxes[:, 0] + 0.5 * src_w
@@ -361,7 +378,6 @@ class CustomPedestrianDetector(nn.Module):
         return torch.stack([dx, dy, dw, dh], dim=1)
     
     def _inference(self, features, rpn_cls, rpn_reg, anchors, feat_h, feat_w, device):
-        """Inference: generate final detections."""
         batch_size = features.shape[0]
         
         rpn_cls = rpn_cls.permute(0, 2, 3, 1).contiguous().view(batch_size, -1)
@@ -377,7 +393,7 @@ class CustomPedestrianDetector(nn.Module):
             
             # NMS on proposals
             keep = nms(proposals, scores, iou_threshold=0.7)
-            keep = keep[:100]  # Top 100 proposals
+            keep = keep[:100]  # Top 100
             proposals = proposals[keep]
             
             if proposals.shape[0] == 0:
@@ -438,12 +454,9 @@ class CustomPedestrianDetector(nn.Module):
         
         return results
 
-
-class ConvBlock(nn.Module):
-    """Convolutional block with BatchNorm and LeakyReLU."""
-    
+class CustomConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
-        super(ConvBlock, self).__init__()
+        super(CustomConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=False)
         self.bn = nn.BatchNorm2d(out_channels)
         self.activation = nn.LeakyReLU(0.1, inplace=True)
@@ -451,18 +464,17 @@ class ConvBlock(nn.Module):
     def forward(self, x):
         return self.activation(self.bn(self.conv(x)))
 
-
-class ResidualBlock(nn.Module):
-    """Residual block with two convolutions."""
-    
+class CustomResidualBlock(nn.Module):
     def __init__(self, channels):
-        super(ResidualBlock, self).__init__()
-        self.conv1 = ConvBlock(channels, channels // 2, kernel_size=1, padding=0)
-        self.conv2 = ConvBlock(channels // 2, channels, kernel_size=3, padding=1)
+        super(CustomResidualBlock, self).__init__()
+        self.conv1 = CustomConvBlock(channels, channels // 2, kernel_size=1, padding=0)
+        self.conv2 = CustomConvBlock(channels // 2, channels, kernel_size=3, padding=1)
     
     def forward(self, x):
         return x + self.conv2(self.conv1(x))
 
+#endregion
+#region API
 
 def load_yolo_model(path: str = 'yolov8n.pt'):
     from ultralytics import YOLO # type: ignore
@@ -484,25 +496,6 @@ def load_detr_model(device):
 
     return model.to(device)
 
-def load_custom_model(device='cpu', num_classes=2, input_size=416):
-    """
-    Load custom pedestrian detection model.
-    
-    Args:
-        device: Device to load model on ('cpu' or 'cuda')
-        num_classes: Number of classes (default 2: background + pedestrian)
-        input_size: Input image size (default 416 for faster training)
-        
-    Returns:
-        CustomPedestrianDetector model on specified device
-    """
-    model = CustomPedestrianDetector(
-        num_classes=num_classes,
-        num_anchors=9,
-        input_size=input_size
-    )
-    return model.to(device)
-
 def load_rcnn_model(device):
     import torchvision
     from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
@@ -511,6 +504,14 @@ def load_rcnn_model(device):
     in_features = model.roi_heads.box_predictor.cls_score.in_features # type: ignore
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, 2)
 
+    return model.to(device)
+
+def load_custom_model(device='cpu', num_classes=2, input_size=1024):
+    model = CustomPedestrianDetector(
+        num_classes=num_classes,
+        num_anchors=9,
+        input_size=input_size
+    )
     return model.to(device)
 
 #endregion

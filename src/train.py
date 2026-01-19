@@ -188,7 +188,7 @@ def train_custom(model, train_dataloader, val_dataloader, save_dir, device):
     from eval import evaluate_custom
     
     # Final hyperparameters
-    num_epochs = 10
+    num_epochs = 50
     learning_rate = 3e-4
     weight_decay = 1e-4
     patience = 10

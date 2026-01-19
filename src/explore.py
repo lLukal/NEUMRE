@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 import torch
 from ultralytics import YOLO # type: ignore
+from models import CustomPedestrianDetector
 from utils import DatasetType, ModelType # type: ignore
 
 #region DRAW
@@ -112,24 +113,6 @@ def draw_yolo_predictions(image, results, conf=0.25):
 #     cv2.waitKey(0)
 #     cv2.destroyAllWindows()
 
-def load_torch_model(weights_path, device="cuda"):
-    import torchvision
-
-    device = torch.device(device if torch.cuda.is_available() else "cpu")
-
-    # Example: Faster R-CNN
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
-        weights=None,
-        num_classes=2,
-    )
-
-    checkpoint = torch.load(weights_path, map_location=device)
-    model.load_state_dict(checkpoint)
-    model.to(device)
-    model.eval()
-
-    return model, device
-
 def draw_torch_predictions(image, outputs, conf=0.25):
     boxes = outputs.get("boxes")
     scores = outputs.get("scores")
@@ -159,6 +142,24 @@ def draw_torch_predictions(image, outputs, conf=0.25):
 
     return image
 
+# def load_torch_model(weights_path, device="cuda"):
+#     import torchvision
+
+#     device = torch.device(device if torch.cuda.is_available() else "cpu")
+
+#     # Example: Faster R-CNN
+#     model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
+#         weights=None,
+#         num_classes=2,
+#     )
+
+#     checkpoint = torch.load(weights_path, map_location=device)
+#     model.load_state_dict(checkpoint)
+#     model.to(device)
+#     model.eval()
+
+#     return model, device
+
 #endregion
 #region MODEL
 
@@ -172,14 +173,29 @@ def load_faster_rcnn(weights_path, device):
     return model.to(device).eval()
 
 def load_custom(weights_path, device):
-    # import torchvision
-    # model = torchvision.models.detection.ssd300_vgg16(weights=None, num_classes=2)
-    # model.load_state_dict(torch.load(weights_path, map_location=device))
-    # return model.to(device).eval()
-    pass
+    model = CustomPedestrianDetector(
+        num_classes=2,
+        num_anchors=9,
+        input_size=1024
+    )
+    checkpoint = torch.load(weights_path, map_location=device)
+
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    elif isinstance(checkpoint, dict) and "model" in checkpoint:
+        state_dict = checkpoint["model"]
+    else:
+        state_dict = checkpoint
+
+    cleaned_state_dict = {}
+    for k, v in state_dict.items():
+        cleaned_state_dict[k.replace("module.", "")] = v
+
+    model.load_state_dict(cleaned_state_dict, strict=True)
+
+    return model.to(device).eval()
 
 def load_detr(weights_path, device):
-    # Load from Torch Hub to ensure the architecture matches the citypersons/detr weights
     model = torch.hub.load('facebookresearch/detr:main', 'detr_resnet50', pretrained=False, num_classes=2)
     checkpoint = torch.load(weights_path, map_location=device)
     model.load_state_dict(checkpoint['model'] if 'model' in checkpoint else checkpoint, strict=False) # type: ignore
@@ -205,9 +221,8 @@ def run_detr_inference(model, device, image):
     
     probas = outputs['pred_logits'].softmax(-1)[0, :, :-1]
     scores, _ = probas.max(-1)
-    bboxes = outputs['pred_boxes'][0] # cxcywh normalized
+    bboxes = outputs['pred_boxes'][0]
     
-    # Convert to xyxy pixels
     x_c, y_c, bw, bh = bboxes.unbind(-1)
     b = [(x_c - 0.5 * bw), (y_c - 0.5 * bh), (x_c + 0.5 * bw), (y_c + 0.5 * bh)]
     pixel_boxes = torch.stack(b, dim=-1) * torch.tensor([w, h, w, h], device=device)
@@ -259,9 +274,7 @@ def visualize_sample(dataset_root, weights_path, split="val", index=0, model_typ
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-
-
-def load_custom_model_for_inference(weights_path, input_size=416, device="cuda"):
+def load_custom_model_for_inference(weights_path, input_size=1024, device="cuda"):
     """Load custom pedestrian detector for inference."""
     from models import CustomPedestrianDetector
     
@@ -280,18 +293,13 @@ def load_custom_model_for_inference(weights_path, input_size=416, device="cuda")
     
     return model, device
 
-
-def run_custom_inference(model, device, image, input_size=416, debug=True):
-    """
-    Run inference with custom model.
-    image: BGR OpenCV image
-    """
+def run_custom_inference(model, device, image, input_size=1024, debug=True):
     orig_h, orig_w = image.shape[:2]
+    input_size = model.input_size
     
     # Resize to model input size
-    img_resized = cv2.resize(image, (input_size, input_size))
-    img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).unsqueeze(0).to(device)
+    img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).to(device)
 
     with torch.no_grad():
         outputs = model(img_tensor)[0]
@@ -310,18 +318,18 @@ def run_custom_inference(model, device, image, input_size=416, debug=True):
         print("================================\n")
     
     # Scale boxes back to original image size for visualization
-    if outputs['boxes'].shape[0] > 0:
+    if outputs['boxes'].numel() > 0:
         scale_x = orig_w / input_size
         scale_y = orig_h / input_size
-        outputs['boxes'][:, 0] *= scale_x
-        outputs['boxes'][:, 2] *= scale_x
-        outputs['boxes'][:, 1] *= scale_y
-        outputs['boxes'][:, 3] *= scale_y
+
+        boxes = outputs['boxes']
+        boxes[:, [0, 2]] *= scale_x
+        boxes[:, [1, 3]] *= scale_y
+        outputs['boxes'] = boxes
     
     return outputs
 
 def debug_check_labels(dataset_root, split="train", num_samples=3):
-    """Check if labels are correct by printing box info."""
     dataset_root = Path(dataset_root)
     img_dir = dataset_root / "images" / split
     lbl_dir = dataset_root / "labels" / split
