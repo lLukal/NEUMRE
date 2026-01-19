@@ -183,15 +183,21 @@ def train_rcnn(model, train_dataloader, val_dataloader, save_dir, device):
 
     print("Training Complete!")
 
-def train_custom(model, train_dataloader, val_dataloader, save_dir, device):
+def train_custom(model, train_dataloader, val_dataloader, save_dir, device, overfit_test=False):
     """Train custom Faster R-CNN-style model with mAP evaluation."""
     from eval import evaluate_custom
     
-    # Final hyperparameters
-    num_epochs = 10
-    learning_rate = 3e-4
+    # Overfit test: use small subset and more epochs
+    if overfit_test:
+        num_epochs = 50
+        learning_rate = 1e-3  # Higher LR for faster overfitting
+        print("\n*** OVERFIT TEST MODE: Training on small subset ***\n")
+    else:
+        num_epochs = 10
+        learning_rate = 3e-4
+    
     weight_decay = 1e-4
-    patience = 10
+    patience = 100 if overfit_test else 10  # Don't early stop during overfit test
     
     best_map = -1
     epochs_without_improvement = 0
@@ -302,7 +308,7 @@ def train_custom(model, train_dataloader, val_dataloader, save_dir, device):
 
 #region MAIN
 
-def run_pipeline(dataset_type: DatasetType, model_type: ModelType):
+def run_pipeline(dataset_type: DatasetType, model_type: ModelType, overfit_test=False):
     print('Starting training pipeline...')
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # device = "cpu"
@@ -314,6 +320,14 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType):
         if model_type != ModelType.YOLO:
             train_dataloader = load_dataset(dataset_type, model_type, split='train') # type: ignore
             val_dataloader = load_dataset(dataset_type, model_type, split='val') # type: ignore
+            
+            # For overfit test, use only first 10 batches
+            if overfit_test:
+                print("*** OVERFIT TEST: Using only 10 batches ***")
+                train_subset = list(train_dataloader)[:10]
+                val_subset = list(val_dataloader)[:5]
+                train_dataloader = train_subset
+                val_dataloader = val_subset
 
         # load and train model
         print(f'Preparing model "{model_type.value}"...')
@@ -334,10 +348,12 @@ def run_pipeline(dataset_type: DatasetType, model_type: ModelType):
 
         elif model_type == ModelType.CUSTOM:
             model = load_custom_model(device=device, num_classes=2)
-            train_custom(model, train_dataloader, val_dataloader, save_dir, device)
+            train_custom(model, train_dataloader, val_dataloader, save_dir, device, overfit_test=overfit_test)
 
     except Exception as e:
-        print(e)
+        import traceback
+        print(f"ERROR: {e}")
+        traceback.print_exc()
 
 if __name__ == '__main__':
     import torch
@@ -348,10 +364,14 @@ if __name__ == '__main__':
     # parse system parameters
     args = sys.argv
     if len(args) < 3:
-        print('Usage: python train.py <dataset> <model>')
+        print('Usage: python train.py <dataset> <model> [--overfit]')
         print(f'<dataset> - options:\n\t\t' + '\n\t\t'.join([d.value for d in DatasetType]))
         print(f'<model> - options:\n\t\t' + '\n\t\t'.join([m.value for m in ModelType]))
+        print('--overfit: Run overfit test on small subset')
         exit(1)
 
+    # Check for overfit flag
+    overfit_test = '--overfit' in args
+
     # run
-    run_pipeline(DatasetType(args[1]), ModelType(args[2]))
+    run_pipeline(DatasetType(args[1]), ModelType(args[2]), overfit_test=overfit_test)

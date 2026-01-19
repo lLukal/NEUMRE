@@ -256,7 +256,7 @@ class CustomPredictor:
         self.model.to(self.device)
         self.model.eval()
 
-    def predict(self, image_path, confidence_threshold=0.5):
+    def predict(self, image_path, confidence_threshold=0.9):
         """Run inference on a single image and return annotated image."""
         img = cv2.imread(image_path)
         if img is None:

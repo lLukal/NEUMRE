@@ -99,7 +99,7 @@ def visualize_sample(
         model, device = load_custom_model_for_inference(weights_path)
         outputs = run_custom_inference(model, device, image, debug=True)
         print("Custom boxes:", outputs["boxes"].shape[0])
-        pred_img = draw_torch_predictions(pred_img, outputs, conf=0.05)  # Lower threshold
+        pred_img = draw_torch_predictions(pred_img, outputs, conf=0.9)  # High confidence only
 
     else:
         raise ValueError("model_type must be 'yolo', 'torch', or 'custom'")
@@ -149,15 +149,50 @@ def draw_torch_predictions(image, outputs, conf=0.25):
             continue
 
         x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+        
+        # Green for high confidence (>0.9), red for lower
+        color = (0, 255, 0) if score > 0.9 else (0, 0, 255)
 
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         cv2.putText(
             image,
             f"Pred {score:.2f}",
             (x1, y1 - 5),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
-            (0, 0, 255),
+            color,
+            1,
+        )
+
+    return image
+
+
+def draw_torch_predictions_high_only(image, outputs, conf=0.9):
+    """Draw only high confidence predictions (green boxes only)."""
+    boxes = outputs.get("boxes")
+    scores = outputs.get("scores")
+
+    if boxes is None or scores is None:
+        return image
+
+    boxes = boxes.cpu().numpy()
+    scores = scores.cpu().numpy()
+
+    for (x1, y1, x2, y2), score in zip(boxes, scores):
+        if score < conf:
+            continue
+
+        x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+        color = (0, 255, 0)  # Green only
+
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(
+            image,
+            f"Pred {score:.2f}",
+            (x1, y1 - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            color,
             1,
         )
 
@@ -270,5 +305,65 @@ if __name__ == '__main__':
     # First check if labels are correct
     debug_check_labels("../data/yolo/citypersons", split="val", num_samples=3)
     
-    # Then try visualization
-    visualize_sample("../data/yolo/citypersons", "./trained_models/custom_best.pth", model_type="custom")
+    # Save first 30 images
+    dataset_root = Path("../data/yolo/citypersons")
+    weights_path = "./trained_models/custom_last.pth"
+    split = "val"
+    output_dir = Path("./visualization_output")
+    output_dir.mkdir(exist_ok=True)
+    (output_dir / "all_boxes").mkdir(exist_ok=True)
+    (output_dir / "high_conf_only").mkdir(exist_ok=True)
+    
+    img_dir = dataset_root / "images" / split
+    lbl_dir = dataset_root / "labels" / split
+    img_paths = sorted(list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png")))
+    
+    # Load model once
+    model, device = load_custom_model_for_inference(weights_path)
+    
+    num_images = min(30, len(img_paths))
+    print(f"\nSaving {num_images} images to {output_dir}...\n")
+    
+    for i in range(num_images):
+        img_path = img_paths[i]
+        lbl_path = lbl_dir / img_path.with_suffix(".txt").name
+        
+        image = cv2.imread(str(img_path))
+        gt_img = image.copy()
+        pred_img_all = image.copy()
+        pred_img_high = image.copy()
+        
+        # Draw GT on left side
+        gt_img = draw_yolo_labels(gt_img, lbl_path)
+        
+        # Get predictions
+        outputs = run_custom_inference(model, device, image, debug=False)
+        
+        # Draw ALL boxes (green >0.9, red <0.9)
+        pred_img_all = draw_torch_predictions(pred_img_all, outputs, conf=0.0)  # Show all
+        
+        # Draw ONLY high confidence boxes (>0.9, green only)
+        pred_img_high = draw_torch_predictions_high_only(pred_img_high, outputs, conf=0.9)
+        
+        # Combine GT | Predictions
+        vis_all = np.hstack([gt_img, pred_img_all])
+        vis_high = np.hstack([gt_img, pred_img_high])
+        
+        # Resize if too wide
+        max_width = 1600
+        h, w = vis_all.shape[:2]
+        if w > max_width:
+            scale = max_width / w
+            vis_all = cv2.resize(vis_all, (int(w * scale), int(h * scale)))
+            vis_high = cv2.resize(vis_high, (int(w * scale), int(h * scale)))
+        
+        # Save
+        filename = f"{i+1:03d}_{img_path.stem}.jpg"
+        cv2.imwrite(str(output_dir / "all_boxes" / filename), vis_all)
+        cv2.imwrite(str(output_dir / "high_conf_only" / filename), vis_high)
+        
+        print(f"Saved {i+1}/{num_images}: {filename}")
+    
+    print(f"\nDone! Images saved to:")
+    print(f"  - All boxes (green>0.9, red<0.9): {output_dir / 'all_boxes'}")
+    print(f"  - High confidence only (>0.9):    {output_dir / 'high_conf_only'}")
