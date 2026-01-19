@@ -9,15 +9,12 @@
 - Penn-Fudan: Database for Pedestrian Detection and Segmentation: https://www.cis.upenn.edu/~jshi/ped_html/
     - smaller dataset (170 images, 345 labeled pedestrians)
 
-![alt text](image.png)
-
 # Models
 
-- YOLO - one-stage
-- Faster R-CNN (with ResNet-50 / ResNet-101 backbone) - two-stage
-- DETR (or Deformable DETR) — Transformer-based baseline?
-- Custom simple model
-- RetinaNet or RetinaNet + Soft-NMS?
+- YOLO
+- Faster R-CNN (with ResNet-50 / ResNet-101 backbone)
+- DETR (or Deformable DETR)
+- Custom model architecture
 
 # Instructions
 
@@ -36,8 +33,8 @@ sudo docker compose up # or just docker compose up
 
 ### Datasets
 
-- download caltech and citypersons from links above
-- extract them into data/caltech and data/citypersons
+- download penn_fudan and citypersons from links above
+- extract them into data/penn-fudan and data/citypersons
 
 ### Setup
 
@@ -45,12 +42,42 @@ sudo docker compose up # or just docker compose up
 cd src
 python prep.py
 ```
-- this restructures the datasets (caltech and citypersons) into yolo-compatible standard coco format
+- this restructures the datasets into yolo-compatible standard coco format for further use
 
 ### Training
 
 ```
-python train.py <dataset> <model>
-# look at script for options or run without params to see available
-# for now only yolo model training works
+python train.py
+# run without params to see available options
+# special script for rcnn training in different structure 
+#   python train_rcnn.py
+```
+
+### Data Exploration (visualization of detections after training)
+
+```
+python explore.py
+# run without params to see available options
+```
+
+### Evaluation
+
+```
+python eval.py
+# run without params to see available options
+```
+
+### Other Modules (not used directly)
+
+```
+# overfit_test.py
+#   test specific to custom model
+# models.py
+#   contains definitions of model
+# data.py
+#   contains data handling functions and tools
+# utils.py
+#   other utilities used by other modules
+# trained_models
+#   contains saved .pt or .pth models after training, used for explore.py and visualize.py
 ```
