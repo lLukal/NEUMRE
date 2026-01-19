@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 import torch
+from transformers import DetrForObjectDetection
 from ultralytics import YOLO # type: ignore
 from models import CustomPedestrianDetector
 from utils import DatasetType, ModelType # type: ignore
@@ -92,11 +93,11 @@ def draw_yolo_predictions(image, results, conf=0.25):
 #         print("Torch boxes:", outputs["boxes"].shape[0])
 #         pred_img = draw_torch_predictions(pred_img, outputs, conf=0.5)
 
-    elif model_type == "custom":
-        model, device = load_custom_model_for_inference(weights_path)
-        outputs = run_custom_inference(model, device, image, debug=True)
-        print("Custom boxes:", outputs["boxes"].shape[0])
-        pred_img = draw_torch_predictions(pred_img, outputs, conf=0.9)  # High confidence only
+    # elif model_type == "custom":
+    #     model, device = load_custom_model_for_inference(weights_path)
+    #     outputs = run_custom_inference(model, device, image, debug=True)
+    #     print("Custom boxes:", outputs["boxes"].shape[0])
+    #     pred_img = draw_torch_predictions(pred_img, outputs, conf=0.9)  # High confidence only
 
 #     else:
 #         raise ValueError("model_type must be 'yolo', 'torch', or 'custom'")
@@ -231,7 +232,11 @@ def load_custom(weights_path, device):
     return model.to(device).eval()
 
 def load_detr(weights_path, device):
-    model = torch.hub.load('facebookresearch/detr:main', 'detr_resnet50', pretrained=False, num_classes=2)
+    model = DetrForObjectDetection.from_pretrained(
+        "facebook/detr-resnet-50",
+        num_labels=1, 
+        ignore_mismatched_sizes=True 
+    )
     checkpoint = torch.load(weights_path, map_location=device)
     model.load_state_dict(checkpoint['model'] if 'model' in checkpoint else checkpoint, strict=False) # type: ignore
     return model.to(device).eval() # type: ignore
@@ -254,13 +259,24 @@ def run_detr_inference(model, device, image):
     with torch.no_grad():
         outputs = model(img_tensor.unsqueeze(0).to(device))
     
-    probas = outputs['pred_logits'].softmax(-1)[0, :, :-1]
-    scores, _ = probas.max(-1)
-    bboxes = outputs['pred_boxes'][0]
-    
-    x_c, y_c, bw, bh = bboxes.unbind(-1)
-    b = [(x_c - 0.5 * bw), (y_c - 0.5 * bh), (x_c + 0.5 * bw), (y_c + 0.5 * bh)]
-    pixel_boxes = torch.stack(b, dim=-1) * torch.tensor([w, h, w, h], device=device)
+    logits = outputs.logits          # (1, Q, C+1)
+    boxes = outputs.pred_boxes       # (1, Q, 4) in cxcywh normalized
+
+    probs = logits.softmax(-1)[0, :, :-1]  # remove "no-object"
+    scores, labels = probs.max(-1)
+
+    keep = scores > 0.5
+    scores = scores[keep]
+    boxes = boxes[0, keep]
+
+    # Convert cxcywh -> xyxy (pixel coords)
+    cx, cy, bw, bh = boxes.unbind(-1)
+    x1 = (cx - bw / 2) * w
+    y1 = (cy - bh / 2) * h
+    x2 = (cx + bw / 2) * w
+    y2 = (cy + bh / 2) * h
+
+    pixel_boxes = torch.stack([x1, y1, x2, y2], dim=-1)
     
     return {"boxes": pixel_boxes, "scores": scores}
 
@@ -288,15 +304,19 @@ def visualize_sample(dataset_root, weights_path, split="val", index=0, model_typ
         if model_type == "rcnn":
             model = load_faster_rcnn(weights_path, device)
             outputs = run_torchvision_inference(model, device, image)
-        elif model_type == "custom":
-            model = load_custom(weights_path, device)
-            outputs = run_torchvision_inference(model, device, image)
+            print(f"{model_type} boxes:", outputs["boxes"].shape[0])
+            pred_img = draw_torch_predictions(pred_img, outputs, conf=0.5)
         elif model_type == "detr":
             model = load_detr(weights_path, device)
             outputs = run_detr_inference(model, device, image)
-            
-        print(f"{model_type} boxes:", outputs["boxes"].shape[0])
-        pred_img = draw_torch_predictions(pred_img, outputs, conf=0.5)
+            print(f"{model_type} boxes:", outputs["boxes"].shape[0])
+            pred_img = draw_torch_predictions(pred_img, outputs, conf=0.5)
+        elif model_type == "custom":
+            model, device = load_custom_model_for_inference(weights_path)
+            outputs = run_custom_inference(model, device, image, debug=True)
+            # print("Custom boxes:", outputs["boxes"].shape[0])
+            pred_img = draw_torch_predictions(pred_img, outputs, conf=0.9)  # High confidence only
+
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -310,7 +330,6 @@ def visualize_sample(dataset_root, weights_path, split="val", index=0, model_typ
     cv2.destroyAllWindows()
 
 def load_custom_model_for_inference(weights_path, input_size=1024, device="cuda"):
-    """Load custom pedestrian detector for inference."""
     from models import CustomPedestrianDetector
     
     device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -334,7 +353,7 @@ def run_custom_inference(model, device, image, input_size=1024, debug=True):
     
     # Resize to model input size
     img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).to(device)
+    img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).unsqueeze(0).to(device)
 
     with torch.no_grad():
         outputs = model(img_tensor)[0]
@@ -434,64 +453,64 @@ if __name__ == '__main__':
     # debug_check_labels("../data/yolo/citypersons", split="val", num_samples=3)
     
     # Save first 30 images
-    dataset_root = Path("../data/yolo/citypersons")
-    weights_path = "./trained_models/custom_last.pth"
-    split = "val"
-    output_dir = Path("./visualization_output")
-    output_dir.mkdir(exist_ok=True)
-    (output_dir / "all_boxes").mkdir(exist_ok=True)
-    (output_dir / "high_conf_only").mkdir(exist_ok=True)
+    # dataset_root = Path("../data/yolo/citypersons")
+    # weights_path = "./trained_models/custom_last.pth"
+    # split = "val"
+    # output_dir = Path("./visualization_output")
+    # output_dir.mkdir(exist_ok=True)
+    # (output_dir / "all_boxes").mkdir(exist_ok=True)
+    # (output_dir / "high_conf_only").mkdir(exist_ok=True)
     
-    img_dir = dataset_root / "images" / split
-    lbl_dir = dataset_root / "labels" / split
-    img_paths = sorted(list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png")))
+    # img_dir = dataset_root / "images" / split
+    # lbl_dir = dataset_root / "labels" / split
+    # img_paths = sorted(list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png")))
     
-    # Load model once
-    model, device = load_custom_model_for_inference(weights_path)
+    # # Load model once
+    # model, device = load_custom_model_for_inference(weights_path)
     
-    num_images = min(30, len(img_paths))
-    print(f"\nSaving {num_images} images to {output_dir}...\n")
+    # num_images = min(30, len(img_paths))
+    # print(f"\nSaving {num_images} images to {output_dir}...\n")
     
-    for i in range(num_images):
-        img_path = img_paths[i]
-        lbl_path = lbl_dir / img_path.with_suffix(".txt").name
+    # for i in range(num_images):
+    #     img_path = img_paths[i]
+    #     lbl_path = lbl_dir / img_path.with_suffix(".txt").name
         
-        image = cv2.imread(str(img_path))
-        gt_img = image.copy()
-        pred_img_all = image.copy()
-        pred_img_high = image.copy()
+    #     image = cv2.imread(str(img_path))
+    #     gt_img = image.copy() # type: ignore
+    #     pred_img_all = image.copy() # type: ignore
+    #     pred_img_high = image.copy() # type: ignore
         
-        # Draw GT on left side
-        gt_img = draw_yolo_labels(gt_img, lbl_path)
+    #     # Draw GT on left side
+    #     gt_img = draw_yolo_labels(gt_img, lbl_path)
         
-        # Get predictions
-        outputs = run_custom_inference(model, device, image, debug=False)
+    #     # Get predictions
+    #     outputs = run_custom_inference(model, device, image, debug=False)
         
-        # Draw ALL boxes (green >0.9, red <0.9)
-        pred_img_all = draw_torch_predictions(pred_img_all, outputs, conf=0.0)  # Show all
+    #     # Draw ALL boxes (green >0.9, red <0.9)
+    #     pred_img_all = draw_torch_predictions(pred_img_all, outputs, conf=0.0)  # Show all
         
-        # Draw ONLY high confidence boxes (>0.9, green only)
-        pred_img_high = draw_torch_predictions_high_only(pred_img_high, outputs, conf=0.9)
+    #     # Draw ONLY high confidence boxes (>0.9, green only)
+    #     pred_img_high = draw_torch_predictions_high_only(pred_img_high, outputs, conf=0.9)
         
-        # Combine GT | Predictions
-        vis_all = np.hstack([gt_img, pred_img_all])
-        vis_high = np.hstack([gt_img, pred_img_high])
+    #     # Combine GT | Predictions
+    #     vis_all = np.hstack([gt_img, pred_img_all])
+    #     vis_high = np.hstack([gt_img, pred_img_high])
         
-        # Resize if too wide
-        max_width = 1600
-        h, w = vis_all.shape[:2]
-        if w > max_width:
-            scale = max_width / w
-            vis_all = cv2.resize(vis_all, (int(w * scale), int(h * scale)))
-            vis_high = cv2.resize(vis_high, (int(w * scale), int(h * scale)))
+    #     # Resize if too wide
+    #     max_width = 1600
+    #     h, w = vis_all.shape[:2]
+    #     if w > max_width:
+    #         scale = max_width / w
+    #         vis_all = cv2.resize(vis_all, (int(w * scale), int(h * scale)))
+    #         vis_high = cv2.resize(vis_high, (int(w * scale), int(h * scale)))
         
-        # Save
-        filename = f"{i+1:03d}_{img_path.stem}.jpg"
-        cv2.imwrite(str(output_dir / "all_boxes" / filename), vis_all)
-        cv2.imwrite(str(output_dir / "high_conf_only" / filename), vis_high)
+    #     # Save
+    #     filename = f"{i+1:03d}_{img_path.stem}.jpg"
+    #     cv2.imwrite(str(output_dir / "all_boxes" / filename), vis_all)
+    #     cv2.imwrite(str(output_dir / "high_conf_only" / filename), vis_high)
         
-        print(f"Saved {i+1}/{num_images}: {filename}")
+    #     print(f"Saved {i+1}/{num_images}: {filename}")
     
-    print(f"\nDone! Images saved to:")
-    print(f"  - All boxes (green>0.9, red<0.9): {output_dir / 'all_boxes'}")
-    print(f"  - High confidence only (>0.9):    {output_dir / 'high_conf_only'}")
+    # print(f"\nDone! Images saved to:")
+    # print(f"  - All boxes (green>0.9, red<0.9): {output_dir / 'all_boxes'}")
+    # print(f"  - High confidence only (>0.9):    {output_dir / 'high_conf_only'}")

@@ -76,7 +76,7 @@ def detr_collate_fn(batch):
         boxes = target["boxes"].clone()
 
         if boxes.numel() > 0:
-            # convert x1,y1,x2,y2 → cx,cy,w,h
+            # convert x1,y1,x2,y2 -> cx,cy,w,h
             x1, y1, x2, y2 = boxes.unbind(1)
             cx = (x1 + x2) / 2 / w
             cy = (y1 + y2) / 2 / h
